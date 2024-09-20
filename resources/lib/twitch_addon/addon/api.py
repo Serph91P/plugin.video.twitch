@@ -17,6 +17,8 @@ from .constants import Keys, SCOPES
 from .error_handling import api_error_handler
 from .twitch_exceptions import PlaybackFailed, TwitchException
 
+import requests
+
 from twitch import queries as twitch_queries
 from twitch import oauth
 from twitch.api import usher

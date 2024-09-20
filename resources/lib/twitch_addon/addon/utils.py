@@ -14,7 +14,7 @@ import time
 
 from base64 import b64decode
 from datetime import datetime
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 
 from .common import kodi, json_store
 from .strings import STRINGS
@@ -32,6 +32,18 @@ if not xbmcvfs.exists(ADDON_DATA_DIR):
     mkdir_result = xbmcvfs.mkdir(ADDON_DATA_DIR)
 storage = json_store.JSONStore(ADDON_DATA_DIR + 'storage.json')
 
+def get_proxy_url():
+    proxy_url = kodi.get_setting('proxy_url')
+    if proxy_url:
+        log_utils.log('Using proxy: {}'.format(proxy_url), log_utils.LOGDEBUG)
+    return proxy_url
+
+def get_video_proxy_settings():
+    if kodi.get_setting('use_proxy_video') == 'true':
+        proxy_url = kodi.get_setting('proxy_url')
+        if proxy_url:
+            return {'http': proxy_url, 'https': proxy_url}
+    return None
 
 def show_menu(menu, parent=None):
     setting_id = 'menu'
@@ -115,7 +127,6 @@ def get_redirect_uri():
     else:
         return kodi.decode_utf8(REDIRECT_URI)
 
-
 def get_client_id(default=False):
     settings_id = kodi.get_setting('oauth_clientid')
     stripped_id = settings_id.strip()
@@ -126,7 +137,6 @@ def get_client_id(default=False):
         return kodi.decode_utf8(settings_id)
     else:
         return kodi.decode_utf8(b64decode(CLIENT_ID))
-
 
 def get_private_client_id():
     settings_id = kodi.get_setting('private_oauth_clientid')

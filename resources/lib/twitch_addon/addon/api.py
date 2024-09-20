@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 """
-     
     Copyright (C) 2012-2019 Twitch-on-Kodi
 
     This file is part of Twitch-on-Kodi (plugin.video.twitch)
@@ -43,6 +42,8 @@ class Twitch:
         self.queries.OAUTH_TOKEN = self.access_token
         self.queries.APP_TOKEN = self.app_token
         self.client = oauth.clients.MobileClient(self.client_id, self.client_secret)
+        self.session = requests.Session()
+        self.session.proxies.update(utils.get_proxy_settings())
 
         self.private_client_id = utils.get_private_client_id()
         self.private_access_token = utils.get_private_oauth_token()
@@ -332,36 +333,41 @@ class Twitch:
     @api_error_handler
     @cache.cache_method(cache_limit=cache.limit)
     def get_vod(self, video_id):
-        results = self.usher.video(video_id, headers=self.get_private_credential_headers())
+        proxy = utils.get_video_proxy_settings()
+        results = self.usher.video(video_id, headers=self.get_private_credential_headers(), proxy=proxy)
         return self.error_check(results, private=True)
 
     @api_error_handler
     @cache.cache_method(cache_limit=cache.limit)
     def get_clip(self, slug):
-        return self.usher.clip(slug, headers=self.get_private_credential_headers())
+        proxy = utils.get_video_proxy_settings()
+        return self.usher.clip(slug, headers=self.get_private_credential_headers(), proxy=proxy)
 
     @api_error_handler
     @cache.cache_method(cache_limit=cache.limit)
     def get_live(self, name):
-        results = self.usher.live(name, headers=self.get_private_credential_headers())
+        proxy = utils.get_video_proxy_settings()
+        results = self.usher.live(name, headers=self.get_private_credential_headers(), proxy=proxy)
         return self.error_check(results, private=True)
 
     @api_error_handler
     @cache.cache_method(cache_limit=cache.limit)
     def live_request(self, name):
+        proxy = utils.get_video_proxy_settings()
         if not utils.inputstream_adpative_supports('EXT-X-DISCONTINUITY'):
-            results = self.usher.live_request(name, platform='ps4', headers=self.get_private_credential_headers())
+            results = self.usher.live_request(name, platform='ps4', headers=self.get_private_credential_headers(), proxy=proxy)
         else:
-            results = self.usher.live_request(name, headers=self.get_private_credential_headers())
+            results = self.usher.live_request(name, headers=self.get_private_credential_headers(), proxy=proxy)
         return self.error_check(results, private=True)
 
     @api_error_handler
     @cache.cache_method(cache_limit=cache.limit)
     def video_request(self, video_id):
+        proxy = utils.get_video_proxy_settings()
         if not utils.inputstream_adpative_supports('EXT-X-DISCONTINUITY'):
-            results = self.usher.video_request(video_id, platform='ps4', headers=self.get_private_credential_headers())
+            results = self.usher.video_request(video_id, platform='ps4', headers=self.get_private_credential_headers(), proxy=proxy)
         else:
-            results = self.usher.video_request(video_id, headers=self.get_private_credential_headers())
+            results = self.usher.video_request(video_id, headers=self.get_private_credential_headers(), proxy=proxy)
         return self.error_check(results, private=True)
 
     @staticmethod

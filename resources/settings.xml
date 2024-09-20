@@ -62,6 +62,7 @@
         <setting label="30262" id="change_language" type="action" action="RunPlugin(plugin://$ID/?mode=edit_languages&amp;action=change)"/>
 
         <!-- HTTP-Proxy-Settings -->
+        <setting label="Use Proxy for Video" id="use_proxy_video" type="bool" default="false"/>
         <setting label="Proxy URL" id="proxy_url" type="text" default="" visible="eq(-1,true)"/>
 
         <setting label="30120" type="lsep"/>

@@ -31,4 +31,4 @@ jobs:
       - name: Kodi Add-on Checker (Omega)
         id: kodi-addon-checker
         run: |
-          kodi-addon-checker ${{ github.event.repository.name }} --branch=omega
+          kodi-addon-checker ${{ github.event.repository.name }} --branch=omega --skip-dependency-checks

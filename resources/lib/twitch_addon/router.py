@@ -290,6 +290,20 @@ def _clear_watch_history(content_type=None, content_id=None, clear_all=False):
     clear_watch_history.route(content_type, content_id, clear_all)
 
 
+@dispatcher.register(MODES.DEVICEAUTH)
+@error_handler
+def _device_auth():
+    from .routes import device_auth
+    device_auth.route_connect(twitch_api)
+
+
+@dispatcher.register(MODES.DEVICEAUTHDISCONNECT)
+@error_handler
+def _device_auth_disconnect():
+    from .routes import device_auth
+    device_auth.route_disconnect(twitch_api)
+
+
 def run(argv):
     queries = kodi.parse_query(argv[2])
     log_utils.log('Version: |%s| Application Version: %s' % (kodi.get_version(), kodi.get_kodi_version()), log_utils.LOGDEBUG)
@@ -299,6 +313,13 @@ def run(argv):
     plugin_url = 'plugin://%s/' % kodi.get_id()
     if argv[0] != plugin_url:
         return
+
+    # Sync is_device_authenticated with actual token state (migration for existing users)
+    _has_token = bool(kodi.get_setting('oauth_token_helix').strip())
+    _is_auth = kodi.get_setting('is_device_authenticated') == 'true'
+    if _has_token != _is_auth:
+        kodi.set_setting('is_device_authenticated', 'true' if _has_token else 'false')
+
     try:
         global twitch_api
         twitch_api = api.Twitch()

@@ -1220,3 +1220,7 @@ msgstr ""
 msgctxt "#30331"
 msgid "Your Twitch Application Client Secret. Required for automatic token refresh. Find it at dev.twitch.tv/console under your app settings."
 msgstr ""
+
+msgctxt "#30332"
+msgid "Prefer HEVC/1440p (Website Token)"
+msgstr ""

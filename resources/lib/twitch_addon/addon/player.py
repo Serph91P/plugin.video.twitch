@@ -80,31 +80,9 @@ class TwitchPlayer(xbmc.Player):
         if not is_playing:
             self.reset()
         else:
-            # Keep Twitch playback on the first audio track by default. Users can
-            # still switch tracks manually in Kodi if a stream exposes more than one.
-            self._select_first_audio_track()
-
             if seek_time:
                 seek_time = float(seek_time)
                 self.seekTime(seek_time)
-
-    def _select_first_audio_track(self):
-        """
-        Select the first available audio track for Twitch playback.
-        """
-        try:
-            # Wait a short moment for streams to be fully initialized
-            xbmc.sleep(500)
-
-            audio_streams = self.getAvailableAudioStreams()
-            log_utils.log('Player: Available audio streams: {}'.format(audio_streams), log_utils.LOGDEBUG)
-
-            if audio_streams:
-                log_utils.log('Player: Selecting first audio track (index 0)', log_utils.LOGINFO)
-                self.setAudioStream(0)
-        except Exception as e:
-            log_utils.log('Player: Error in _select_first_audio_track: {}'.format(str(e)),
-                          log_utils.LOGWARNING)
 
     def onPlayBackStopped(self):
         log_utils.log('Player: |onPlayBackStopped|', log_utils.LOGDEBUG)

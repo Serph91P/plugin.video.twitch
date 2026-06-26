@@ -553,7 +553,7 @@ class JsonListItemConverter(object):
                     if 'source' in video['id'].lower():
                         return video
 
-            if hevc and get_hevc_token() and not clip:
+            if (adaptive or hevc) and get_hevc_token() and not clip:
                 hevc_video = self.select_best_hevc_video(videos)
                 if hevc_video:
                     return hevc_video

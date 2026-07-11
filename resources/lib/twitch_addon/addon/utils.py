@@ -53,11 +53,12 @@ def loose_version(v):
 
 
 def use_inputstream_adaptive():
-    if kodi.get_setting('video_quality_ia') == 'true' or kodi.get_setting('video_quality') == '3':
+    video_quality = kodi.get_setting('video_quality')
+    if kodi.get_setting('video_quality_ia') == 'true' or video_quality in ('3', '4'):
         if kodi.get_setting('video_support_ia_builtin') == 'true':
             return True
         elif kodi.get_setting('video_support_ia_addon') == 'true':
-            use_ia = kodi.get_setting('video_quality_ia') == 'true' or kodi.get_setting('video_quality') == '3'
+            use_ia = kodi.get_setting('video_quality_ia') == 'true' or video_quality in ('3', '4')
             if not use_ia:
                 return False
 
@@ -75,13 +76,15 @@ def use_inputstream_adaptive():
 
             if not ia_enabled:
                 kodi.set_setting('video_quality_ia', 'false')
-                kodi.set_setting('video_quality', '0')
+                if video_quality == '3':
+                    kodi.set_setting('video_quality', '0')
                 return False
             else:
                 return True
         else:
             kodi.set_setting('video_quality_ia', 'false')
-            kodi.set_setting('video_quality', '0')
+            if video_quality == '3':
+                kodi.set_setting('video_quality', '0')
             return False
     else:
         return False
@@ -179,6 +182,11 @@ def get_hevc_token():
             idx = token.find(':')
             token = token[idx + 1:]
     return kodi.decode_utf8(token) if token else ""
+
+
+def supports_hevc_decoding():
+    """Kodi 20+ includes an HEVC-capable FFmpeg software decoder."""
+    return kodi.get_kodi_version().major >= 20
 
 
 # Legacy compatibility functions

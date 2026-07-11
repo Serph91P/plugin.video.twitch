@@ -1222,5 +1222,5 @@ msgid "Your Twitch Application Client Secret. Required for automatic token refre
 msgstr ""
 
 msgctxt "#30332"
-msgid "Prefer HEVC/1440p (Website Token)"
+msgid "Automatic (best playable)"
 msgstr ""

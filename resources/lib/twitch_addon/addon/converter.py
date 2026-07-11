@@ -15,7 +15,7 @@ import re
 from . import menu_items
 from .common import kodi
 from .constants import Keys, Images, MODES, ADAPTIVE_SOURCE_TEMPLATE
-from .utils import the_art, TitleBuilder, i18n, get_oauth_token, get_vodcast_color, use_inputstream_adaptive, get_thumbnail_size, get_refresh_stamp, to_string, get_private_oauth_token, get_hevc_token, convert_duration
+from .utils import the_art, TitleBuilder, i18n, get_oauth_token, get_vodcast_color, use_inputstream_adaptive, get_thumbnail_size, get_refresh_stamp, to_string, get_private_oauth_token, get_hevc_token, supports_hevc_decoding, convert_duration
 
 
 class PlaylistConverter(object):
@@ -523,18 +523,24 @@ class JsonListItemConverter(object):
         return {u'plot': plot, u'plotoutline': plot, u'tagline': _title.rstrip('\r\n')}
 
     def get_video_for_quality(self, videos, ask=True, quality=None, clip=False):
-        use_ia = use_inputstream_adaptive()
+        video_quality = kodi.get_setting('video_quality')
+        automatic = video_quality == '4'
+        automatic_selection = automatic and not ask and not quality and not clip
+        if automatic_selection:
+            has_playable_hevc = get_hevc_token() and supports_hevc_decoding() \
+                and self.select_best_hevc_video(videos)
+            use_ia = bool(has_playable_hevc) and use_inputstream_adaptive()
+        else:
+            use_ia = use_inputstream_adaptive()
         if use_ia and not any(v['name'] == 'Adaptive' for v in videos) and not clip:
             videos.append(ADAPTIVE_SOURCE_TEMPLATE)
         if ask is True:
             return self.select_video_for_quality(videos)
         else:
-            video_quality = kodi.get_setting('video_quality')
             source = video_quality == '0'
             ask = video_quality == '1'
             bandwidth = video_quality == '2'
             adaptive = video_quality == '3'
-            hevc = video_quality == '4'
             try:
                 bandwidth_value = int(kodi.get_setting('bandwidth'))
             except:
@@ -548,12 +554,24 @@ class JsonListItemConverter(object):
             if ask:
                 return self.select_video_for_quality(videos)
 
-            if clip and (bandwidth or adaptive or source or hevc):
+            if clip and (bandwidth or adaptive or source or automatic):
                 for video in videos:
                     if 'source' in video['id'].lower():
                         return video
 
-            if (adaptive or hevc) and get_hevc_token() and not clip:
+            if automatic and not clip:
+                hevc_video = None
+                if get_hevc_token() and supports_hevc_decoding():
+                    hevc_video = self.select_best_hevc_video(videos)
+                if hevc_video:
+                    if use_ia:
+                        for video in videos:
+                            if video.get('id') == 'hls':
+                                return video
+                    return hevc_video
+                return self.select_best_h264_video(videos)
+
+            if adaptive and get_hevc_token() and not clip:
                 hevc_video = self.select_best_hevc_video(videos)
                 if hevc_video:
                     return hevc_video
@@ -563,7 +581,7 @@ class JsonListItemConverter(object):
                     if 'hls' in video['id']:
                         return video
 
-            elif (source or hevc) and not clip:
+            elif source and not clip:
                 limit_framerate = int(kodi.get_setting('source_frame_rate_limit'))
                 if limit_framerate >= 30:
                     adjusted_limit = limit_framerate + 0.999  # use + 0.999 because 30 fps may be > 30 i.e. 30.211
@@ -601,21 +619,37 @@ class JsonListItemConverter(object):
         hevc_videos = [video for video in videos if cls.is_hevc_video(video)]
         if not hevc_videos:
             return None
-        return sorted(hevc_videos, key=cls.hevc_video_sort_key, reverse=True)[0]
+        return sorted(hevc_videos, key=cls.video_sort_key, reverse=True)[0]
 
     @staticmethod
     def is_hevc_video(video):
+        if video.get('id') == 'hls':
+            return False
         values = ' '.join([str(video.get(key, '')) for key in ('id', 'name', 'url', 'codecs', 'codec')]).lower()
         return any(codec in values for codec in ('h265', 'hevc', 'hvc1', 'hev1'))
 
+    @classmethod
+    def select_best_h264_video(cls, videos):
+        candidates = []
+        for video in videos:
+            values = ' '.join([str(video.get(key, '')) for key in ('id', 'name')]).lower()
+            if 'audio_only' in values or 'audio only' in values or cls.is_hevc_video(video):
+                continue
+            codecs = str(video.get('codecs') or video.get('codec') or '').lower()
+            if codecs and not any(codec in codecs for codec in ('avc', 'h264')):
+                continue
+            is_source = video.get('id') == 'chunked' or 'source' in values
+            if cls.video_sort_key(video)[0] or codecs or is_source:
+                candidates.append(video)
+        if not candidates:
+            return None
+        return sorted(candidates, key=cls.video_sort_key, reverse=True)[0]
+
     @staticmethod
-    def hevc_video_sort_key(video):
+    def video_sort_key(video):
         values = ' '.join([str(video.get(key, '')) for key in ('id', 'name', 'url', 'resolution')]).lower()
-        resolution = str(video.get('resolution') or '')
-        heights = [int(height) for _, height in re.findall(r'([0-9]{3,4})x([0-9]{3,4})', resolution)]
+        heights = [int(height) for _, height in re.findall(r'([0-9]{3,4})x([0-9]{3,4})', values)]
         heights.extend([int(height) for height in re.findall(r'(?:^|[^0-9])([0-9]{3,4})p(?:[^0-9]|$)', values)])
-        if not heights:
-            heights = [int(height) for _, height in re.findall(r'([0-9]{3,4})x([0-9]{3,4})', values)]
         height = max(heights) if heights else 0
         try:
             bandwidth = int(video.get('bandwidth') or 0)
@@ -625,7 +659,7 @@ class JsonListItemConverter(object):
             fps = float(video.get('fps') or 0)
         except (TypeError, ValueError):
             fps = 0
-        return (height == 1440, height, bandwidth, fps)
+        return (height, bandwidth, fps, str(video.get('url') or ''))
 
     @staticmethod
     def select_video_for_quality(videos):

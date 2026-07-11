@@ -1173,6 +1173,10 @@ msgctxt "#30331"
 msgid "Your Twitch Application Client Secret. Required for automatic token refresh. Find it at dev.twitch.tv/console under your app settings."
 msgstr "Dein Twitch Application Client Secret. Wird für die automatische Token-Aktualisierung benötigt. Du findest es unter dev.twitch.tv/console in deinen App-Einstellungen."
 
+msgctxt "#30332"
+msgid "Automatic (best playable)"
+msgstr "Automatisch (beste abspielbare Qualität)"
+
 #~ msgctxt "#30132"
 #~ msgid "OAuth token is required for access to authorized user functions."
 #~ msgstr "Für den Zugriff auf geschützte Benutzerfunktionen wird ein OAuth-Token benötigt."

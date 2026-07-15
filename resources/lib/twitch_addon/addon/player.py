@@ -150,17 +150,11 @@ class TwitchPlayer(xbmc.Player):
                                         if video['name'] == 'Adaptive':
                                             request = twitch.live_request(name)
                                             if request:
-                                                if kodi.get_kodi_version().major >= 18:
-                                                    request['headers']['verifypeer'] = 'false'
                                                 item_dict['path'] = \
                                                     request['url'] + utils.append_headers(request['headers'])
                                         playback_item = kodi.create_item(item_dict, add=False)
                                         if video['name'] == 'Adaptive':
-                                            inputstream_property = 'inputstream'
-                                            if kodi.get_kodi_version().major < 19:
-                                                inputstream_property += 'addon'
-                                            playback_item.setProperty(inputstream_property, 'inputstream.adaptive')
-                                            playback_item.setProperty('inputstream.adaptive.manifest_type', 'hls')
+                                            utils.set_inputstream_adaptive_properties(playback_item)
 
                                         stream_name = display_name or name
                                         self.window.setProperty(self.reconnect_keys['stream'],

@@ -333,6 +333,13 @@ def get_search_history_size():
     return int(kodi.get_setting('search_history_size'))
 
 
+def get_search_backend():
+    backend = kodi.get_setting('search_backend')
+    if isinstance(backend, bool):
+        return 0
+    return 1 if backend in (1, '1') else 0
+
+
 def get_search_history(search_type):
     history = None
     history_size = get_search_history_size()

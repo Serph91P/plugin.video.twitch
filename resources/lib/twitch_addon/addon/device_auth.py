@@ -428,7 +428,7 @@ def auto_refresh_token():
         error_msg = str(e)
         log_utils.log('Token auto-refresh failed: %s' % error_msg, log_utils.LOGWARNING)
         # Only clear refresh token if Twitch says it's definitively invalid.
-        # Do NOT clear on network errors — next startup might succeed.
+        # Do NOT clear on network errors because the next startup might succeed.
         if any(keyword in error_msg.lower() for keyword in ['invalid refresh token', 'invalid_grant', 'invalid grant']):
             log_utils.log('Refresh token is invalid, clearing device tokens', log_utils.LOGWARNING)
             kodi.set_setting('device_refresh_token', '')

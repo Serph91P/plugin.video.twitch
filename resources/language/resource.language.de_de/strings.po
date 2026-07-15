@@ -1177,6 +1177,18 @@ msgctxt "#30332"
 msgid "Automatic (best playable)"
 msgstr "Automatisch (beste abspielbare Qualität)"
 
+msgctxt "#30333"
+msgid "Search method"
+msgstr "Suchmethode"
+
+msgctxt "#30334"
+msgid "Website (twitch.tv, fuzzy)"
+msgstr "Website (twitch.tv, fehlertolerant)"
+
+msgctxt "#30335"
+msgid "Helix API"
+msgstr "Helix-API"
+
 #~ msgctxt "#30132"
 #~ msgid "OAuth token is required for access to authorized user functions."
 #~ msgstr "Für den Zugriff auf geschützte Benutzerfunktionen wird ein OAuth-Token benötigt."

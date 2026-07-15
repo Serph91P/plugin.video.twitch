@@ -1224,3 +1224,15 @@ msgstr ""
 msgctxt "#30332"
 msgid "Automatic (best playable)"
 msgstr ""
+
+msgctxt "#30333"
+msgid "Search method"
+msgstr ""
+
+msgctxt "#30334"
+msgid "Website (twitch.tv, fuzzy)"
+msgstr ""
+
+msgctxt "#30335"
+msgid "Helix API"
+msgstr ""

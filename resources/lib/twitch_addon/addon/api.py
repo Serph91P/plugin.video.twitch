@@ -13,7 +13,7 @@ import json
 import sys
 import os
 
-from . import cache, utils
+from . import cache, gql_search, utils
 from .common import kodi, log_utils
 from .common.cache import invalidate_cache_for_function
 from .constants import Keys, SCOPES
@@ -160,14 +160,14 @@ class Twitch:
             if self.client_id and token_check['client_id'] != self.client_id:
                 log_utils.log('Token client_id mismatch: token=%s, configured=%s. Clearing stale token.' % (
                     token_check['client_id'], self.client_id), log_utils.LOGWARNING)
-                # Token was obtained with a different client_id — it won't work with Helix
+                # Token was obtained with a different client_id, so it won't work with Helix
                 kodi.set_setting('oauth_token_helix', '')
                 kodi.set_setting('device_refresh_token', '')
                 kodi.set_setting('device_token_expires_at', '')
                 kodi.set_setting('is_device_authenticated', 'false')
                 return False
             elif not self.client_id:
-                # No client_id configured — adopt the token's client_id
+                # No client_id configured, so adopt the token's client_id
                 log_utils.log('No client_id configured, adopting from token: %s' % token_check['client_id'], log_utils.LOGDEBUG)
                 self.client_id = token_check['client_id']
                 self.queries.CLIENT_ID = self.client_id
@@ -304,22 +304,46 @@ class Twitch:
         return self.error_check(results)
 
     @api_error_handler
-    @cache.cache_method(cache_limit=cache.limit)
     def get_channel_search(self, search_query, after='MA==', first=20):
+        backend = utils.get_search_backend()
+        return self._get_channel_search(search_query, after, first, backend)
+
+    @cache.cache_method(cache_limit=cache.limit)
+    def _get_channel_search(self, search_query, after, first, backend):
+        if backend == 0 and after == 'MA==':
+            results = gql_search.search(search_query, 'channels')
+            if results is not None:
+                return results
         results = self.api.search.get_channels(search_query=search_query, after=after, first=first,
                                                live_only=Boolean.FALSE)
         return self.error_check(results)
 
     @api_error_handler
-    @cache.cache_method(cache_limit=cache.limit)
     def get_stream_search(self, search_query, after='MA==', first=20):
+        backend = utils.get_search_backend()
+        return self._get_stream_search(search_query, after, first, backend)
+
+    @cache.cache_method(cache_limit=cache.limit)
+    def _get_stream_search(self, search_query, after, first, backend):
+        if backend == 0 and after == 'MA==':
+            results = gql_search.search(search_query, 'streams')
+            if results is not None:
+                return results
         results = self.api.search.get_channels(search_query=search_query, after=after, first=first,
                                                live_only=Boolean.TRUE)
         return self.error_check(results)
 
     @api_error_handler
-    @cache.cache_method(cache_limit=cache.limit)
     def get_game_search(self, search_query, after='MA==', first=20):
+        backend = utils.get_search_backend()
+        return self._get_game_search(search_query, after, first, backend)
+
+    @cache.cache_method(cache_limit=cache.limit)
+    def _get_game_search(self, search_query, after, first, backend):
+        if backend == 0 and after == 'MA==':
+            results = gql_search.search(search_query, 'games')
+            if results is not None:
+                return results
         results = self.api.search.get_categories(search_query=search_query, after=after, first=first)
         return self.error_check(results)
 

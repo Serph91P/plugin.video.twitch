@@ -25,6 +25,7 @@ from tools.build_package import (
     _parse_addon_identity,
     build_package,
     collect_runtime_members,
+    validate_manifest_references,
     validate_package,
     verify_checksum,
 )
@@ -180,7 +181,7 @@ class BuildPackageTests(unittest.TestCase):
             output = Path(tmpdir) / 'out.zip'
             build_package(ROOT, output)
             with zipfile.ZipFile(output) as zf:
-                with zf.open('addon.xml') as f:
+                with zf.open('plugin.video.twitch/addon.xml') as f:
                     text = f.read().decode('utf-8')
                 aid, ver, _ = _parse_addon_identity(text)
                 self.assertEqual(aid, 'plugin.video.twitch')
@@ -194,6 +195,174 @@ class BuildPackageTests(unittest.TestCase):
             errors = validate_package(output, ROOT)
             self.assertTrue(len(errors) > 0, 'expected filename mismatch error')
             self.assertIn('filename mismatch', errors[0])
+
+
+class RootedTopologyTests(unittest.TestCase):
+    """Every ZIP member must live under the single plugin.video.twitch/ top-level directory."""
+
+    def test_all_members_prefixed_with_addon_id(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / 'out.zip'
+            build_package(ROOT, output)
+            with zipfile.ZipFile(output) as zf:
+                for name in zf.namelist():
+                    self.assertTrue(
+                        name.startswith('plugin.video.twitch/'),
+                        f'{name} is not under plugin.video.twitch/ prefix',
+                    )
+
+    def test_top_level_directory_count_is_exactly_one(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / 'out.zip'
+            build_package(ROOT, output)
+            with zipfile.ZipFile(output) as zf:
+                top_dirs = set()
+                for name in zf.namelist():
+                    parts = name.split('/')
+                    if len(parts) > 1:
+                        top_dirs.add(parts[0])
+                self.assertEqual(
+                    top_dirs,
+                    {'plugin.video.twitch'},
+                    f'expected exactly one top-level dir, got {top_dirs}',
+                )
+
+
+class CompressionTests(unittest.TestCase):
+    """ZIP members must be compressed (ZIP_DEFLATED), not stored flat."""
+
+    def test_zip_uses_compression(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / 'out.zip'
+            build_package(ROOT, output)
+            with zipfile.ZipFile(output) as zf:
+                for info in zf.infolist():
+                    self.assertIn(
+                        info.compress_type,
+                        (zipfile.ZIP_DEFLATED, zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA),
+                        f'{info.filename} is not compressed (compress_type={info.compress_type})',
+                    )
+
+    def test_compressed_is_smaller_than_stored(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            compressed = Path(tmpdir) / 'compressed.zip'
+            stored = Path(tmpdir) / 'stored.zip'
+            build_package(ROOT, compressed)
+            from tools.build_package import collect_runtime_members, _parse_addon_identity
+            addon_xml_text = (ROOT / 'addon.xml').read_text(encoding='utf-8')
+            addon_id, _, _ = _parse_addon_identity(addon_xml_text)
+            members = collect_runtime_members(ROOT)
+            prefix = addon_id + '/'
+            with zipfile.ZipFile(stored, 'w', zipfile.ZIP_STORED) as zf:
+                for member in members:
+                    full = ROOT / member
+                    data = full.read_bytes()
+                    info = zipfile.ZipInfo(prefix + member)
+                    info.date_time = (1980, 1, 1, 0, 0, 0)
+                    info.compress_type = zipfile.ZIP_STORED
+                    zf.writestr(info, data)
+            self.assertLess(
+                compressed.stat().st_size,
+                stored.stat().st_size,
+                'compressed ZIP should be smaller than stored ZIP',
+            )
+
+
+class SizeRegressionTests(unittest.TestCase):
+    """Defensible size regression threshold, not hard-coded byte identity."""
+
+    MAX_SIZE_KB = 2500
+
+    def test_package_size_within_bound(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / 'out.zip'
+            build_package(ROOT, output)
+            size_kb = output.stat().st_size / 1024
+            self.assertLess(
+                size_kb,
+                self.MAX_SIZE_KB,
+                f'package size {size_kb:.1f} KB exceeds {self.MAX_SIZE_KB} KB bound',
+            )
+
+    def test_compressed_members_have_reduced_size(self):
+        """At least one member must be meaningfully smaller when compressed."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / 'out.zip'
+            build_package(ROOT, output)
+            with zipfile.ZipFile(output) as zf:
+                compressed_savings = 0
+                for info in zf.infolist():
+                    if info.compress_type != zipfile.ZIP_STORED:
+                        if info.file_size > 0:
+                            ratio = 1.0 - (info.compress_size / info.file_size)
+                            if ratio > 0.1:
+                                compressed_savings += 1
+                self.assertGreater(
+                    compressed_savings, 0,
+                    'no members showed meaningful compression savings',
+                )
+
+
+class ManifestReferenceTests(unittest.TestCase):
+    """Parse addon.xml and reject each missing manifest-referenced local asset."""
+
+    def test_valid_package_passes_manifest_check(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / 'out.zip'
+            build_package(ROOT, output)
+            errors = validate_manifest_references(output, ROOT)
+            self.assertEqual(errors, [], f'manifest errors: {errors}')
+
+    def test_missing_local_library_detected(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / 'out.zip'
+            build_package(ROOT, output)
+            import zipfile as _zf
+            with _zf.ZipFile(output, 'r') as zf:
+                names = [n for n in zf.namelist()
+                         if not n.endswith('addon_runner.py')]
+                with _zf.ZipFile(Path(tmpdir) / 'modified.zip', 'w',
+                                 _zf.ZIP_DEFLATED) as out_zf:
+                    for name in names:
+                        out_zf.writestr(name, zf.read(name))
+            errors = validate_manifest_references(
+                Path(tmpdir) / 'modified.zip', ROOT)
+            self.assertTrue(len(errors) > 0, 'expected error for missing local library')
+            self.assertTrue(any('addon_runner.py' in e for e in errors))
+
+    def test_missing_icon_detected(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / 'out.zip'
+            build_package(ROOT, output)
+            import zipfile as _zf
+            with _zf.ZipFile(output, 'r') as zf:
+                names = [n for n in zf.namelist()
+                         if 'icon.png' not in n]
+                with _zf.ZipFile(Path(tmpdir) / 'modified.zip', 'w',
+                                 _zf.ZIP_DEFLATED) as out_zf:
+                    for name in names:
+                        out_zf.writestr(name, zf.read(name))
+            errors = validate_manifest_references(
+                Path(tmpdir) / 'modified.zip', ROOT)
+            self.assertTrue(len(errors) > 0, 'expected error for missing icon')
+            self.assertTrue(any('icon.png' in e for e in errors))
+
+    def test_external_resources_are_allowed(self):
+        """Addon dependency imports are external and must not cause errors."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / 'out.zip'
+            build_package(ROOT, output)
+            errors = validate_manifest_references(output, ROOT)
+            self.assertEqual(errors, [],
+                             f'external references should be allowed: {errors}')
+
+    def test_manifest_references_under_root(self):
+        """All local references must resolve under the rooted ZIP topology."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / 'out.zip'
+            build_package(ROOT, output)
+            errors = validate_manifest_references(output, ROOT)
+            self.assertEqual(errors, [])
 
 
 if __name__ == '__main__':

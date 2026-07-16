@@ -36,9 +36,24 @@ jobs:
 
       - name: Branch coverage gate
         run: |
-          CRITICAL="resources/lib/twitch_addon/addon/watch_history.py,resources/lib/twitch_addon/addon/common/search_history.py,resources/lib/twitch_addon/addon/common/kodi.py,resources/lib/twitch_addon/addon/utils.py,resources/lib/twitch_addon/addon/constants.py,resources/lib/twitch_addon/router.py"
-          python -m coverage run --branch --include="$CRITICAL" -m unittest discover -v
-          python -m coverage report --fail-under=45
+          python -c "
+          from tools.coverage_gate import measure_branch_coverage
+          result = measure_branch_coverage()
+          if result.get('error'):
+              print(f'COVERAGE GATE ERROR: {result[\"error\"]}')
+              exit(1)
+          if result.get('modules_missing'):
+              print('CRITICAL MODULES ABSENT FROM COVERAGE REPORT:')
+              for m in result['modules_missing']:
+                  print(f'  - {m}')
+              exit(1)
+          print(f'Branch coverage: {result[\"branch_coverage\"]}%')
+          print(f'Threshold: {result[\"threshold\"]}%')
+          if not result['passed']:
+              print('COVERAGE GATE FAILED: below threshold')
+              exit(1)
+          print('Coverage gate passed')
+          "
 
   package:
     name: Package Validation
@@ -80,8 +95,34 @@ jobs:
               print('CHECKSUM MISMATCH')
               sys.exit(1)
           with open('$GITHUB_OUTPUT', 'a') as f:
-              f.write(f'filename={info[\"filename\"]}')
+              f.write(f'filename={info[\"filename\"]}\n')
+              f.write(f'checksum={checksum}\n')
+              f.write(f'addon_id={info[\"addon_id\"]}\n')
+              f.write(f'addon_version={info[\"addon_version\"]}\n')
           print(json.dumps(info, indent=2))
+          "
+
+      - name: Write validation evidence
+        id: evidence
+        run: |
+          python -c "
+          import json, os
+          from pathlib import Path
+          from tools.validate_release import write_validation_evidence
+          evidence = {
+              'candidate_sha': os.environ['GITHUB_SHA'],
+              'validation_run_id': os.environ['GITHUB_RUN_ID'],
+              'validation_head_sha': os.environ['GITHUB_SHA'],
+              'addon_id': '${{ steps.build.outputs.addon_id }}',
+              'addon_version': '${{ steps.build.outputs.addon_version }}',
+              'asset_name': '${{ steps.build.outputs.filename }}',
+              'artifact_sha256': '${{ steps.build.outputs.checksum }}',
+              'tag': '',
+              'publication_id': '${{ steps.build.outputs.addon_id }}@${{ steps.build.outputs.addon_version }}',
+          }
+          evidence_path = Path('dist/validation-evidence.json')
+          write_validation_evidence(evidence_path, evidence)
+          print(json.dumps(evidence, indent=2))
           "
 
       - name: Upload package artifact
@@ -89,6 +130,12 @@ jobs:
         with:
           name: addon-package
           path: dist/${{ steps.build.outputs.filename }}
+
+      - name: Upload validation evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-evidence
+          path: dist/validation-evidence.json
 
   kodi-check:
     name: Kodi Checker (${{ matrix.branch }})

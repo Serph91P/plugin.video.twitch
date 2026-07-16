@@ -81,40 +81,123 @@ jobs:
                   f.write('changes=\n')
           "
 
-      - name: Build runtime package
-        id: create-zip
+      - name: Find validation run
+        id: find-run
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runs = await github.rest.actions.listWorkflowRunsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              branch: context.ref.replace('refs/tags/', ''),
+              per_page: 5,
+            });
+            // Also search the default branch for completed validation runs
+            const defaultRuns = await github.rest.actions.listWorkflowRunsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              branch: 'develop',
+              per_page: 10,
+            });
+            const allRuns = [...runs.data.workflow_runs, ...defaultRuns.data.workflow_runs];
+            let found = null;
+            for (const run of allRuns) {
+              if (run.name === 'Add-on Validations' && run.conclusion === 'success') {
+                found = run;
+                break;
+              }
+            }
+            if (!found) {
+              core.setFailed('No successful validation run found');
+              return;
+            }
+            core.setOutput('validation_run_id', found.id);
+            core.setOutput('validation_sha', found.head_sha);
+
+      - name: Download validation evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: validation-evidence
+          run-id: ${{ steps.find-run.outputs.validation_run_id }}
+          path: validation-artifacts
+
+      - name: Download validated package
+        uses: actions/download-artifact@v4
+        with:
+          name: addon-package
+          run-id: ${{ steps.find-run.outputs.validation_run_id }}
+          path: validation-artifacts
+
+      - name: Verify immutable release contract
+        id: contract
         working-directory: ${{ github.event.repository.name }}
+        env:
+          TAG: ${{ github.ref_name }}
+          CANDIDATE_SHA: ${{ steps.validate.outputs.candidate_sha }}
         run: |
           python -c "
-          from tools.build_package import build_package, validate_package, verify_checksum
+          import json, os, sys
           from pathlib import Path
-          import json, sys
-          info = build_package('.', 'dist/addon.zip')
-          output = Path('dist') / info['filename']
-          Path('dist/addon.zip').rename(output)
-          errors = validate_package(str(output), '.')
+          from tools.validate_release import (
+              load_validation_evidence,
+              validate_release_contract,
+              validate_publication_identity,
+          )
+          from tools.build_package import _parse_addon_identity
+
+          evidence_path = Path('../validation-artifacts/validation-evidence.json')
+          evidence = load_validation_evidence(evidence_path)
+
+          # Read addon.xml from checkout for version comparison
+          addon_xml = Path('addon.xml').read_text(encoding='utf-8')
+          addon_id, addon_version, _ = _parse_addon_identity(addon_xml)
+
+          # Find the artifact file
+          artifacts = list(Path('../validation-artifacts').glob('*.zip'))
+          if not artifacts:
+              print('ERROR: No validated artifact found')
+              sys.exit(1)
+          artifact = artifacts[0]
+
+          tag = os.environ['TAG']
+          candidate_sha = os.environ['CANDIDATE_SHA']
+
+          # Override evidence tag with the actual tag from this release trigger
+          evidence['tag'] = tag
+
+          errors = validate_release_contract(
+              evidence, artifact,
+              expected_tag=tag,
+              expected_sha=candidate_sha,
+          )
+
+          pub_errors = validate_publication_identity(
+              addon_id=addon_id,
+              version=addon_version,
+              tag=tag,
+              expected_addon_id=evidence['addon_id'],
+          )
+          errors.extend(pub_errors)
+
           if errors:
-              print('PACKAGE VALIDATION FAILED:')
+              print('RELEASE CONTRACT VIOLATIONS:')
               for e in errors:
                   print(f'  - {e}')
               sys.exit(1)
-          ok, checksum = verify_checksum(str(output), info['checksum'])
-          if not ok:
-              print('CHECKSUM VERIFICATION FAILED')
-              sys.exit(1)
-          with open('$GITHUB_OUTPUT', 'a') as f:
-              f.write(f'filename={info[\"filename\"]}\n')
-              f.write(f'checksum={checksum}\n')
-              f.write(f'version={info[\"addon_version\"]}\n')
-              f.write(f'addon_id={info[\"addon_id\"]}\n')
-              f.write(f'member_count={info[\"member_count\"]}\n')
-          print(json.dumps(info, indent=2))
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'filename={evidence[\"asset_name\"]}\n')
+              f.write(f'checksum={evidence[\"artifact_sha256\"]}\n')
+              f.write(f'version={evidence[\"addon_version\"]}\n')
+              f.write(f'addon_id={evidence[\"addon_id\"]}\n')
+          print('Release contract verified')
+          print(json.dumps(evidence, indent=2))
           "
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ github.event.repository.name }}/dist/${{ steps.create-zip.outputs.filename }}
+          files: validation-artifacts/${{ steps.contract.outputs.filename }}
           body: ${{ steps.changelog.outputs.changes }}
           prerelease: ${{ steps.release.outputs.pre-release }}
         env:

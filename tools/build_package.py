@@ -106,12 +106,15 @@ def build_package(source_dir, output_path):
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_STORED) as zf:
+    prefix = addon_id + '/'
+
+    with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zf:
         for member in members:
             full = source_dir / member
             data = full.read_bytes()
-            info = zipfile.ZipInfo(member)
+            info = zipfile.ZipInfo(prefix + member)
             info.date_time = (1980, 1, 1, 0, 0, 0)
+            info.compress_type = zipfile.ZIP_DEFLATED
             zf.writestr(info, data)
 
     sha256 = hashlib.sha256()
@@ -148,31 +151,41 @@ def validate_package(output_path, source_dir):
     if actual_filename != expected_filename:
         errors.append(f'filename mismatch: expected {expected_filename}, got {actual_filename}')
 
+    prefix = expected_id + '/'
+    rooted_addon_xml = prefix + 'addon.xml'
+
     with zipfile.ZipFile(output_path, 'r') as zf:
         names = zf.namelist()
         sorted_names = sorted(names)
         if names != sorted_names:
             errors.append('members are not sorted; package is non-deterministic')
 
-        if 'addon.xml' not in names:
-            errors.append('addon.xml missing from package')
+        for name in names:
+            if not name.startswith(prefix):
+                errors.append(f'member {name} is not under the {prefix} root')
 
         for name in names:
-            for prefix in FORBIDDEN_PREFIXES:
-                if name.startswith(prefix):
+            for suffix in FORBIDDEN_PREFIXES:
+                stripped = name[len(prefix):] if name.startswith(prefix) else name
+                if stripped.startswith(suffix):
                     errors.append(f'forbidden member: {name}')
             basename = name.split('/')[-1]
             if basename in FORBIDDEN_EXACT:
                 errors.append(f'forbidden member: {name}')
 
-        if 'addon.xml' in names:
-            with zf.open('addon.xml') as f:
+        if rooted_addon_xml in names:
+            with zf.open(rooted_addon_xml) as f:
                 pkg_xml_text = f.read().decode('utf-8')
             pkg_id, pkg_version, _ = _parse_addon_identity(pkg_xml_text)
             if pkg_id != expected_id:
                 errors.append(f'embedded id mismatch: expected {expected_id}, got {pkg_id}')
             if pkg_version != expected_version:
                 errors.append(f'embedded version mismatch: expected {expected_version}, got {pkg_version}')
+        else:
+            errors.append(f'{rooted_addon_xml} missing from package')
+
+    manifest_errors = validate_manifest_references(output_path, source_dir)
+    errors.extend(manifest_errors)
 
     return errors
 
@@ -186,3 +199,59 @@ def verify_checksum(output_path, expected_checksum):
     if actual != expected_checksum:
         return False, actual
     return True, actual
+
+
+def _extract_local_references(addon_xml_text):
+    """Return local file paths referenced by addon.xml manifest.
+
+    Extracts library, icon, and fanart attributes/elements that point to
+    local files. External URLs and addon dependency imports are excluded.
+    """
+    root = ET.fromstring(addon_xml_text)
+    local_refs = []
+
+    for ext in root.findall('.//extension'):
+        library = ext.attrib.get('library', '')
+        if library and not library.startswith(('http://', 'https://')):
+            local_refs.append(library)
+
+    for tag in ('icon', 'fanart'):
+        for elem in root.iter(tag):
+            text = (elem.text or '').strip()
+            if text and not text.startswith(('http://', 'https://')):
+                local_refs.append(text)
+
+    return sorted(set(local_refs))
+
+
+def validate_manifest_references(output_path, source_dir):
+    """Parse addon.xml and reject each missing manifest-referenced local asset.
+
+    The ZIP uses rooted topology where every member is prefixed with
+    the addon ID directory. Local references from addon.xml are checked
+    against the ZIP contents under that root.
+    """
+    source_dir = Path(source_dir)
+    output_path = Path(output_path)
+    errors = []
+
+    addon_xml = source_dir / 'addon.xml'
+    addon_xml_text = addon_xml.read_text(encoding='utf-8')
+    expected_id, _, _ = _parse_addon_identity(addon_xml_text)
+
+    local_refs = _extract_local_references(addon_xml_text)
+    if not local_refs:
+        return errors
+
+    prefix = expected_id + '/'
+
+    with zipfile.ZipFile(output_path, 'r') as zf:
+        names = zf.namelist()
+        for ref in local_refs:
+            rooted_ref = prefix + ref
+            if rooted_ref not in names:
+                errors.append(
+                    f'manifest-referenced local asset missing from package: {ref}'
+                )
+
+    return errors

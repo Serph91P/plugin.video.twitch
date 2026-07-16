@@ -161,9 +161,12 @@ class LiveNotificationsThread(threading.Thread):
                     channels = twitch_api.get_users(followed_ids)
                     if monitor.waitForAbort(0):
                         return None
+                    channel_data = channels.get(Keys.DATA, []) if isinstance(channels, dict) else []
+                    if not isinstance(channel_data, list):
+                        channel_data = []
                     channels_by_id = {
                         channel.get(Keys.ID): channel
-                        for channel in channels.get(Keys.DATA, [])
+                        for channel in channel_data
                         if channel.get(Keys.ID) in page_streams
                     }
                     for followed_id in followed_ids:

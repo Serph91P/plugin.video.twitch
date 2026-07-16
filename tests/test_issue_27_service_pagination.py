@@ -124,6 +124,16 @@ class _AbortDuringStreamApi(_TwitchApi):
         return result
 
 
+class _UsersResponseApi(_TwitchApi):
+    def __init__(self, pages, response):
+        super(_UsersResponseApi, self).__init__(pages, {})
+        self.response = response
+
+    def get_users(self, user_ids):
+        self.user_calls.append(list(user_ids))
+        return self.response
+
+
 class ServicePaginationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -220,6 +230,20 @@ class ServicePaginationTests(unittest.TestCase):
             {'user_id': 'viewer', 'first': 100, 'after': 'MA=='},
         ])
         self.assertEqual(twitch_api.user_calls, [['gone', 'one']])
+
+    def test_none_user_data_skips_unresolved_users(self):
+        twitch_api = _UsersResponseApi(
+            pages=[{
+                _Keys.DATA: [stream('one', 'Game 1')],
+                'pagination': {},
+            }],
+            response={_Keys.DATA: None},
+        )
+
+        result = self.make_thread().get_followed_streams(twitch_api, _Monitor())
+
+        self.assertEqual(result, [])
+        self.assertEqual(twitch_api.user_calls, [['one']])
 
     def test_empty_page_does_not_request_users(self):
         twitch_api = _TwitchApi(

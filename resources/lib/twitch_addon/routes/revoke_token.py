@@ -10,6 +10,7 @@
 """
 from ..addon import utils, cache
 from ..addon.common import kodi
+from ..addon.device_auth import clear_device_tokens
 from ..addon.twitch_exceptions import TwitchException
 from ..addon.utils import i18n
 
@@ -28,7 +29,8 @@ def route(api):
                 raise TwitchException(response)
             raise TwitchException(response['error'])
         else:
-            kodi.set_setting('oauth_token_helix', '')
-            kodi.set_setting('is_device_authenticated', 'false')
+            clear_device_tokens()
+            api.access_token = ''
+            api.queries.OAUTH_TOKEN = ''
             kodi.notify(msg=i18n('token_revoked'))
             cache.reset_cache()

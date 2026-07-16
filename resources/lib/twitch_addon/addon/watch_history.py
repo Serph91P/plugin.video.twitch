@@ -51,7 +51,6 @@ class WatchHistory:
 
     def close(self):
         self.cursor.execute('COMMIT')
-        self.cursor.execute('VACUUM')
 
         self.database.commit()
 
@@ -159,10 +158,8 @@ class WatchHistory:
         self.open()
         self.execute(query, [content_type, content_id, channel_id, channel_name, 
                             title, thumbnail, game_name, duration, timestamp])
-        self.close()
-        
-        # Cleanup old entries
         self._cleanup()
+        self.close()
 
     def remove(self, content_type, content_id):
         """Remove a specific entry from watch history"""
@@ -177,9 +174,7 @@ class WatchHistory:
         query = '''DELETE FROM %s WHERE rowid NOT IN 
             (SELECT rowid FROM %s ORDER BY time DESC LIMIT ?)''' % (self._table_name, self._table_name)
 
-        self.open()
         self.execute(query, [self._max_items])
-        self.close()
 
 
 # Global instance

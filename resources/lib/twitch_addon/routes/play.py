@@ -219,7 +219,12 @@ def route(api, seek_time=0, channel_id=None, video_id=None, slug=None, ask=False
                     _set_seek_time(seek_time)
                 _set_playing()
                 
-                # Save to watch history
+                if use_player:
+                    kodi.Player().play(item_dict['path'], playback_item)
+                else:
+                    kodi.set_resolved_url(playback_item)
+
+                # Save to watch history after Kodi accepts the playback handoff.
                 try:
                     watch_history = get_watch_history()
                     if utils.get_watch_history_size() > 0:
@@ -258,11 +263,7 @@ def route(api, seek_time=0, channel_id=None, video_id=None, slug=None, ask=False
                             )
                 except Exception as e:
                     log_utils.log('Failed to save watch history: %s' % str(e), log_utils.LOGWARNING)
-                
-                if use_player:
-                    kodi.Player().play(item_dict['path'], playback_item)
-                else:
-                    kodi.set_resolved_url(playback_item)
+
                 if (not slug and not video_id) and (name is not None):
                     if utils.irc_enabled() and api.access_token:
                         username = api.get_username()

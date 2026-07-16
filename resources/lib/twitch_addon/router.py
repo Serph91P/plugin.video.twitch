@@ -304,6 +304,11 @@ def _device_auth_disconnect():
     device_auth.route_disconnect(twitch_api)
 
 
+@error_handler(route_type=1)
+def _dispatch(mode, queries):
+    dispatcher.dispatch(mode, queries)
+
+
 def run(argv):
     queries = kodi.parse_query(argv[2])
     log_utils.log('Version: |%s| Application Version: %s' % (kodi.get_version(), kodi.get_kodi_version()), log_utils.LOGDEBUG)
@@ -329,4 +334,4 @@ def run(argv):
         return
 
     mode = queries.get('mode', None)
-    dispatcher.dispatch(mode, queries)
+    _dispatch(mode, queries)

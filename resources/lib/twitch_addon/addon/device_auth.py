@@ -28,6 +28,10 @@ VALIDATE_URL = 'https://id.twitch.tv/oauth2/validate'
 DEVICE_GRANT_TYPE = 'urn:ietf:params:oauth:grant-type:device_code'
 REFRESH_GRANT_TYPE = 'refresh_token'
 
+MIN_RETRY_AFTER = 1
+MAX_RETRY_AFTER = 30
+MAX_RATE_LIMIT_RETRIES = 3
+
 
 class DeviceAuthError(Exception):
     """Exception for Device Auth errors"""
@@ -44,17 +48,19 @@ class DeviceAuth:
     Requires the user's own registered Twitch application Client-ID.
     """
     
-    def __init__(self, client_id):
+    def __init__(self, client_id, sleep=None):
         """
         Initialize Device Auth with a client ID.
         
         Args:
             client_id: Twitch application Client ID (required).
+            sleep: Optional sleep function for polling delays.
         """
         if not client_id:
             raise DeviceAuthError('Client ID is required for Device Authentication')
         self.client_id = client_id
         self.proxies = utils.get_proxy_dict()
+        self._sleep = sleep or time.sleep
         
     def _make_request(self, url, data, method='POST'):
         """Make HTTP request with error handling"""
@@ -67,7 +73,17 @@ class DeviceAuth:
             else:
                 response = requests.get(url, headers=headers, proxies=self.proxies, timeout=30)
             
-            return response.json()
+            try:
+                result = response.json()
+            except json.JSONDecodeError:
+                if response.status_code != 429:
+                    raise
+                result = {}
+            if response.status_code >= 400 and isinstance(result, dict):
+                result['_http_status'] = response.status_code
+            if response.status_code == 429 and isinstance(result, dict):
+                result['_retry_after'] = response.headers.get('Retry-After')
+            return result
         except requests.exceptions.RequestException as e:
             log_utils.log('Device Auth request failed: %s' % str(e), log_utils.LOGERROR)
             raise DeviceAuthError('Network error: %s' % str(e))
@@ -95,8 +111,7 @@ class DeviceAuth:
             'scopes': scope_string
         }
         
-        log_utils.log('Starting Device Code flow with client_id: %s' % self.client_id[:8] + '...', 
-                     log_utils.LOGDEBUG)
+        log_utils.log('Starting Device Code flow', log_utils.LOGDEBUG)
         
         result = self._make_request(DEVICE_AUTH_URL, data)
         
@@ -110,8 +125,7 @@ class DeviceAuth:
             if field not in result:
                 raise DeviceAuthError('Missing required field: %s' % field)
         
-        log_utils.log('Device Code flow started. User code: %s' % result['user_code'], 
-                     log_utils.LOGINFO)
+        log_utils.log('Device Code flow started', log_utils.LOGINFO)
         
         return result
     
@@ -135,6 +149,7 @@ class DeviceAuth:
         }
         
         start_time = time.time()
+        rate_limit_retries = 0
         
         while True:
             elapsed = time.time() - start_time
@@ -146,6 +161,24 @@ class DeviceAuth:
                 progress_callback(int(elapsed), timeout)
             
             result = self._make_request(TOKEN_URL, data)
+
+            if result.get('_http_status') == 429 or result.get('status') == 429:
+                if rate_limit_retries >= MAX_RATE_LIMIT_RETRIES:
+                    raise DeviceAuthError('Authorization rate limit retry exhausted')
+                try:
+                    retry_after = int(result.get('_retry_after'))
+                except (TypeError, ValueError):
+                    retry_after = interval
+                retry_after = max(MIN_RETRY_AFTER, min(retry_after, MAX_RETRY_AFTER))
+                rate_limit_retries += 1
+                log_utils.log(
+                    'Device Code flow: Rate limited, retrying in %d seconds' % retry_after,
+                    log_utils.LOGWARNING
+                )
+                self._sleep(retry_after)
+                continue
+
+            rate_limit_retries = 0
             
             if 'access_token' in result:
                 log_utils.log('Device Code flow: Token received successfully', log_utils.LOGINFO)
@@ -157,14 +190,14 @@ class DeviceAuth:
                 
                 if status == 400 and message == 'authorization_pending':
                     # User hasn't authorized yet, keep polling
-                    time.sleep(interval)
+                    self._sleep(interval)
                     continue
                 elif status == 400 and message == 'slow_down':
                     # We're polling too fast, increase interval
                     interval = min(interval + 5, 30)
                     log_utils.log('Device Code flow: Slowing down, new interval: %d' % interval, 
                                  log_utils.LOGDEBUG)
-                    time.sleep(interval)
+                    self._sleep(interval)
                     continue
                 elif status == 400 and message == 'expired_token':
                     raise DeviceAuthError('Device code expired. Please try again.')
@@ -174,7 +207,7 @@ class DeviceAuth:
                     raise DeviceAuthError('Authorization failed: %s' % message)
             
             # Unknown response, wait and retry
-            time.sleep(interval)
+            self._sleep(interval)
     
     def refresh_token(self, refresh_token, client_secret=None):
         """

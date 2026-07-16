@@ -404,8 +404,17 @@ def get_thumbnail_size():
 
 
 def get_vodcast_color():
-    color = int(kodi.get_setting('vodcast_highlight'))
-    color = COLORS.split('|')[color]
+    colors = COLORS.split('|')
+    color = kodi.get_setting('vodcast_highlight')
+    if isinstance(color, bool):
+        color = 'red'
+    elif color not in colors:
+        try:
+            color_index = int(color)
+        except (TypeError, ValueError):
+            color = 'red'
+        else:
+            color = colors[color_index] if 0 <= color_index < len(colors) else 'red'
     return kodi.decode_utf8(color)
 
 
@@ -660,14 +669,33 @@ def add_default_quality(content_type, target_id, name, quality):
 
 def remove_default_quality(content_type):
     json_data = get_stored_json()
-    result = kodi.Dialog().select(i18n('remove_default_quality') % content_type,
-                                  ['%s [%s]' % (user[user.keys()[0]]['name'], user[user.keys()[0]]['quality']) for user in json_data['qualities'][content_type]])
-    if result == -1:
+    qualities = json_data.get('qualities')
+    if not isinstance(qualities, dict):
         return None
-    else:
-        result = json_data['qualities'][content_type].pop(result)
-        storage.save(json_data)
-        return result
+    stored = qualities.get(content_type)
+    if not isinstance(stored, list):
+        return None
+
+    choices = []
+    indexes = []
+    for index, user in enumerate(stored):
+        if not isinstance(user, dict) or not user:
+            continue
+        user_id = next(iter(user))
+        quality = user[user_id]
+        if not isinstance(quality, dict) or 'name' not in quality or 'quality' not in quality:
+            continue
+        indexes.append(index)
+        choices.append('%s [%s]' % (quality['name'], quality['quality']))
+    if not choices:
+        return None
+
+    result = kodi.Dialog().select(i18n('remove_default_quality') % content_type, choices)
+    if result < 0 or result >= len(indexes):
+        return None
+    result = stored.pop(indexes[result])
+    storage.save(json_data)
+    return result
 
 
 def clear_list(list_type, list_name):

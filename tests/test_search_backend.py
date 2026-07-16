@@ -40,7 +40,7 @@ def load_api():
 
     cache = types.ModuleType('twitch_addon.addon.cache')
     cache.limit = 1
-    cache.cache_method = lambda cache_limit: identity_decorator
+    cache.cache_method = lambda cache_limit, persist=True: identity_decorator
     cache.reset_cache = MagicMock()
     sys.modules[cache.__name__] = cache
 

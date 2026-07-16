@@ -17,9 +17,9 @@ jobs:
         run: |
           version=${GITHUB_REF/refs\/tags\//}
           if [[ $version == *-dev ]] ; then
-            echo "pre-release=true" >> $GITHUB_OUTPUT
+            echo "pre-release=true" >> "$GITHUB_OUTPUT"
           else
-            echo "pre-release=false" >> $GITHUB_OUTPUT
+            echo "pre-release=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Checkout Add-on
@@ -27,43 +27,94 @@ jobs:
         with:
           path: ${{ github.event.repository.name }}
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install libxml2-utils xmlstarlet zip
+          python -m pip install --upgrade pip
+          python -m pip install pyyaml
+
+      - name: Validate candidate commit
+        id: validate
+        working-directory: ${{ github.event.repository.name }}
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          python -c "
+          import os
+          from tools.validate_commit import git_rev_parse, validate_commit_sha
+          head_sha = git_rev_parse('HEAD')
+          expected_sha = os.environ['EXPECTED_SHA']
+          errors = validate_commit_sha(head_sha, expected_sha)
+          if errors:
+              print('COMMIT VALIDATION FAILED:')
+              for e in errors:
+                  print(f'  - {e}')
+              exit(1)
+          print(f'candidate_sha={head_sha}')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'candidate_sha={head_sha}\n')
+          "
 
       - name: Get Changelog
         id: changelog
-        run: |
-          changes=$(xmlstarlet sel -t -v '//news' -n addon.xml)
-          EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
-          echo "changes<<$EOF" >> $GITHUB_OUTPUT
-          echo "$changes" >> $GITHUB_OUTPUT
-          echo "$EOF" >> $GITHUB_OUTPUT
         working-directory: ${{ github.event.repository.name }}
+        run: |
+          python -c "
+          import os
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          text = Path('addon.xml').read_text(encoding='utf-8')
+          root = ET.fromstring(text)
+          news = root.find('.//news')
+          if news is not None and news.text:
+              print(news.text)
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                  f.write('changes<<CHANGELOG_EOF\n')
+                  f.write(news.text + '\n')
+                  f.write('CHANGELOG_EOF\n')
+          else:
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                  f.write('changes=\n')
+          "
 
-      - name: Create Zip
+      - name: Build runtime package
         id: create-zip
-        run: |
-          git reset
-          git checkout .
-          git clean -fdx
-          mv .git ..
-          rm -rf .??*
-          rm -rf docs
-          rm *.md
-          version=$(xmlstarlet sel -t -v 'string(/addon/@version)' addon.xml)
-          filename=${{ github.event.repository.name }}-${version}.zip
-          cd ..
-          zip -r $filename ${{ github.event.repository.name }}
-          mv .git ${{ github.event.repository.name }}
-          echo "filename=$filename" >> $GITHUB_OUTPUT
         working-directory: ${{ github.event.repository.name }}
+        run: |
+          python -c "
+          from tools.build_package import build_package, validate_package, verify_checksum
+          from pathlib import Path
+          import json, sys
+          info = build_package('.', 'dist/addon.zip')
+          output = Path('dist') / info['filename']
+          Path('dist/addon.zip').rename(output)
+          errors = validate_package(str(output), '.')
+          if errors:
+              print('PACKAGE VALIDATION FAILED:')
+              for e in errors:
+                  print(f'  - {e}')
+              sys.exit(1)
+          ok, checksum = verify_checksum(str(output), info['checksum'])
+          if not ok:
+              print('CHECKSUM VERIFICATION FAILED')
+              sys.exit(1)
+          with open('$GITHUB_OUTPUT', 'a') as f:
+              f.write(f'filename={info[\"filename\"]}\n')
+              f.write(f'checksum={checksum}\n')
+              f.write(f'version={info[\"addon_version\"]}\n')
+              f.write(f'addon_id={info[\"addon_id\"]}\n')
+              f.write(f'member_count={info[\"member_count\"]}\n')
+          print(json.dumps(info, indent=2))
+          "
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ steps.create-zip.outputs.filename }}
+          files: ${{ github.event.repository.name }}/dist/${{ steps.create-zip.outputs.filename }}
           body: ${{ steps.changelog.outputs.changes }}
           prerelease: ${{ steps.release.outputs.pre-release }}
         env:

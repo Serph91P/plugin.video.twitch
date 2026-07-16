@@ -187,8 +187,8 @@ class CacheContractTests(unittest.TestCase):
 
         self.assertEqual({'call': 1}, followed_channels())
         cache_file = self.cache_files()[0]
-        secret = 'DO-NOT-LOG-CORRUPT-PAYLOAD'
-        cache_file.write_bytes(('not-a-pickle-' + secret).encode('utf-8'))
+        sentinel = 'DO-NOT-LOG-CORRUPT-PAYLOAD'
+        cache_file.write_bytes(('not-a-pickle-' + sentinel).encode('utf-8'))
 
         with patch.object(self.cache, '_save_func') as save_func:
             self.assertEqual({'call': 2}, followed_channels())
@@ -196,10 +196,10 @@ class CacheContractTests(unittest.TestCase):
         save_func.assert_called_once()
         self.assertFalse(cache_file.exists())
         logs = ' '.join(str(call) for call in self.log_utils.log.call_args_list)
-        self.assertNotIn(secret, logs)
+        self.assertNotIn(sentinel, logs)
 
     def test_sensitive_boundary_can_explicitly_disable_persistence(self):
-        secret = 'Bearer DO-NOT-PERSIST-THIS-TOKEN'
+        sentinel = 'Bearer DO-NOT-PERSIST-THIS-TOKEN'
         calls = []
 
         @self.cache.cache_function(1, persist=False)
@@ -208,17 +208,17 @@ class CacheContractTests(unittest.TestCase):
             return {'authorization': authorization, 'manifest': '#EXTM3U'}
 
         self.assertEqual(
-            '#EXTM3U', playback_manifest(secret)['manifest']
+            '#EXTM3U', playback_manifest(sentinel)['manifest']
         )
         self.assertEqual(
-            '#EXTM3U', playback_manifest(secret)['manifest']
+            '#EXTM3U', playback_manifest(sentinel)['manifest']
         )
 
-        self.assertEqual([secret, secret], calls)
+        self.assertEqual([sentinel, sentinel], calls)
         persisted = b''.join(path.read_bytes() for path in self.cache_files())
-        self.assertNotIn(secret.encode('utf-8'), persisted)
+        self.assertNotIn(sentinel.encode('utf-8'), persisted)
         logs = ' '.join(str(call) for call in self.log_utils.log.call_args_list)
-        self.assertNotIn(secret, logs)
+        self.assertNotIn(sentinel, logs)
 
     def test_playback_api_boundaries_do_not_persist_responses(self):
         module = load_api(self.cache)

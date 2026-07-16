@@ -587,7 +587,7 @@ msgid "Remove %s quality"
 msgstr ""
 
 msgctxt "#30167"
-msgid "Default Qualities"
+msgid "Saved default qualities"
 msgstr ""
 
 msgctxt "#30168"
@@ -675,27 +675,27 @@ msgid "Remove a language"
 msgstr ""
 
 msgctxt "#30191"
-msgid "Remove a stream quality"
+msgid "Remove a saved stream quality"
 msgstr ""
 
 msgctxt "#30192"
-msgid "Remove a video quality"
+msgid "Remove a saved video quality"
 msgstr ""
 
 msgctxt "#30193"
-msgid "Remove a clip quality"
+msgid "Remove a saved clip quality"
 msgstr ""
 
 msgctxt "#30194"
-msgid "Remove all stream qualities"
+msgid "Remove all saved stream qualities"
 msgstr ""
 
 msgctxt "#30195"
-msgid "Remove all video qualities"
+msgid "Remove all saved video qualities"
 msgstr ""
 
 msgctxt "#30196"
-msgid "Remove all clip qualities"
+msgid "Remove all saved clip qualities"
 msgstr ""
 
 msgctxt "#30197"
@@ -799,7 +799,7 @@ msgid "Unknown"
 msgstr ""
 
 msgctxt "#30222"
-msgid "VODCast highlight color"
+msgid "Rerun highlight color"
 msgstr ""
 
 msgctxt "#30223"
@@ -1235,4 +1235,16 @@ msgstr ""
 
 msgctxt "#30335"
 msgid "Helix API"
+msgstr ""
+
+msgctxt "#30336"
+msgid "Sets the title color used to distinguish reruns."
+msgstr ""
+
+msgctxt "#30337"
+msgid "Select one saved quality preference to remove."
+msgstr ""
+
+msgctxt "#30338"
+msgid "Removes every saved quality preference for this content type after confirmation."
 msgstr ""

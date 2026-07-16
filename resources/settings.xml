@@ -323,7 +323,7 @@
                 </setting>
             </group>
             <group id="3" label="30222">
-                <setting id="vodcast_highlight" type="string" label="30222" help="">
+                <setting id="vodcast_highlight" type="string" label="30222" help="30336">
                     <level>2</level>
                     <default>red</default>
                     <constraints>
@@ -403,34 +403,34 @@
                 </setting>
             </group>
             <group id="2" label="30191">
-                <setting id="remove_default_stream_quality" type="action" label="30191" help="">
+                <setting id="remove_default_stream_quality" type="action" label="30191" help="30337">
                     <level>1</level>
                     <control type="button" format="action"/>
                     <data>RunPlugin(plugin://$ID/?mode=edit_qualities&amp;remove=true&amp;content_type=stream)</data>
                 </setting>
-                <setting id="remove_default_video_quality" type="action" label="30192" help="">
+                <setting id="remove_default_video_quality" type="action" label="30192" help="30337">
                     <level>1</level>
                     <control type="button" format="action"/>
                     <data>RunPlugin(plugin://$ID/?mode=edit_qualities&amp;remove=true&amp;content_type=video)</data>
                 </setting>
-                <setting id="remove_default_clip_quality" type="action" label="30193" help="">
+                <setting id="remove_default_clip_quality" type="action" label="30193" help="30337">
                     <level>1</level>
                     <control type="button" format="action"/>
                     <data>RunPlugin(plugin://$ID/?mode=edit_qualities&amp;remove=true&amp;content_type=clip)</data>
                 </setting>
             </group>
             <group id="3" label="30194">
-                <setting id="clear_default_stream_qualities" type="action" label="30194" help="">
+                <setting id="clear_default_stream_qualities" type="action" label="30194" help="30338">
                     <level>2</level>
                     <control type="button" format="action"/>
                     <data>RunPlugin(plugin://$ID/?mode=clear_list&amp;list_type=stream&amp;list_name=qualities)</data>
                 </setting>
-                <setting id="clear_default_video_qualities" type="action" label="30195" help="">
+                <setting id="clear_default_video_qualities" type="action" label="30195" help="30338">
                     <level>2</level>
                     <control type="button" format="action"/>
                     <data>RunPlugin(plugin://$ID/?mode=clear_list&amp;list_type=video&amp;list_name=qualities)</data>
                 </setting>
-                <setting id="clear_default_clip_qualities" type="action" label="30196" help="">
+                <setting id="clear_default_clip_qualities" type="action" label="30196" help="30338">
                     <level>2</level>
                     <control type="button" format="action"/>
                     <data>RunPlugin(plugin://$ID/?mode=clear_list&amp;list_type=clip&amp;list_name=qualities)</data>

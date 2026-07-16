@@ -41,12 +41,12 @@ def _make_evidence(**overrides):
     return evidence
 
 
-def _make_artifact(path, addon_id='plugin.video.twitch'):
+def _make_artifact(path, addon_id='plugin.video.twitch', addon_version='3.1.8'):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(f'{addon_id}/addon.xml',
-                     '<addon id="plugin.video.twitch" version="3.1.8" name="Twitch"/>')
+                     f'<addon id="{addon_id}" version="{addon_version}" name="Twitch"/>')
     sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
     return sha256
 
@@ -163,6 +163,29 @@ class TagVersionMismatchTests(unittest.TestCase):
                 expected_sha=evidence['candidate_sha'])
             self.assertTrue(len(errors) > 0, f'malformed dev tag should fail: {errors}')
 
+    def test_malformed_dev_tag_consistent_version_rejected(self):
+        """Dev tag v3.1.8-dev-extra with matching addon_version 3.1.8-dev-extra
+        should fail only due to malformed tag grammar, not version mismatch."""
+        evidence = _make_evidence(
+            tag='v3.1.8-dev-extra',
+            addon_version='3.1.8-dev-extra',
+            asset_name='plugin.video.twitch-3.1.8-dev-extra.zip',
+            publication_id='plugin.video.twitch@3.1.8-dev-extra',
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact = Path(tmpdir) / 'plugin.video.twitch-3.1.8-dev-extra.zip'
+            checksum = _make_artifact(artifact, addon_version='3.1.8-dev-extra')
+            evidence['artifact_sha256'] = checksum
+            errors = validate_release_contract(
+                evidence, artifact, expected_tag='v3.1.8-dev-extra',
+                expected_sha=evidence['candidate_sha'])
+            self.assertTrue(len(errors) > 0, f'malformed dev tag should fail: {errors}')
+            # Must fail due to malformed tag grammar, not version mismatch
+            self.assertTrue(any('malformed tag' in e for e in errors),
+                           f'expected malformed tag error, got: {errors}')
+            self.assertFalse(any('version mismatch' in e.lower() for e in errors),
+                           f'failed due to version mismatch, not grammar: {errors}')
+
     def test_dev_tag_mismatched_base_version_fails(self):
         """Dev tag v3.1.9-dev should fail when addon_version is 3.1.8."""
         evidence = _make_evidence(tag='v3.1.9-dev', addon_version='3.1.8')
@@ -245,6 +268,82 @@ class PublicationIdentityTests(unittest.TestCase):
             version='3.1.8',
             tag='v3.1.8-dev-extra')
         self.assertTrue(len(errors) > 0, f'malformed dev tag should fail: {errors}')
+
+    def test_malformed_stable_tag_extra_suffix_rejected(self):
+        """Stable tag v3.1.8-extra should be rejected as malformed."""
+        errors = validate_publication_identity(
+            addon_id='plugin.video.twitch',
+            version='3.1.8',
+            tag='v3.1.8-extra')
+        self.assertTrue(len(errors) > 0, f'malformed stable tag should fail: {errors}')
+        self.assertTrue(any('malformed tag' in e for e in errors),
+                       f'expected malformed tag error: {errors}')
+
+    def test_malformed_tag_missing_patch_rejected(self):
+        """Stable tag v3.1 should be rejected (missing patch segment)."""
+        errors = validate_publication_identity(
+            addon_id='plugin.video.twitch',
+            version='3.1',
+            tag='v3.1')
+        self.assertTrue(len(errors) > 0, f'missing patch tag should fail: {errors}')
+        self.assertTrue(any('malformed tag' in e for e in errors),
+                       f'expected malformed tag error: {errors}')
+
+    def test_malformed_tag_missing_minor_patch_rejected(self):
+        """Stable tag v3 should be rejected (missing minor and patch)."""
+        errors = validate_publication_identity(
+            addon_id='plugin.video.twitch',
+            version='3',
+            tag='v3')
+        self.assertTrue(len(errors) > 0, f'missing minor/patch tag should fail: {errors}')
+        self.assertTrue(any('malformed tag' in e for e in errors),
+                       f'expected malformed tag error: {errors}')
+
+    def test_malformed_tag_whitespace_rejected(self):
+        """Tag with whitespace should be rejected."""
+        errors = validate_publication_identity(
+            addon_id='plugin.video.twitch',
+            version='3.1.8',
+            tag='v3.1.8 ')
+        self.assertTrue(len(errors) > 0, f'whitespace tag should fail: {errors}')
+        self.assertTrue(any('malformed tag' in e for e in errors),
+                       f'expected malformed tag error: {errors}')
+
+    def test_malformed_tag_empty_version_rejected(self):
+        """Tag v with no version should be rejected."""
+        errors = validate_publication_identity(
+            addon_id='plugin.video.twitch',
+            version='3.1.8',
+            tag='v')
+        self.assertTrue(len(errors) > 0, f'empty version tag should fail: {errors}')
+        self.assertTrue(any('malformed tag' in e for e in errors),
+                       f'expected malformed tag error: {errors}')
+
+    def test_dev_tag_with_double_dev_rejected(self):
+        """Dev tag v3.1.8-dev-dev should be rejected."""
+        errors = validate_publication_identity(
+            addon_id='plugin.video.twitch',
+            version='3.1.8',
+            tag='v3.1.8-dev-dev')
+        self.assertTrue(len(errors) > 0, f'double-dev tag should fail: {errors}')
+        self.assertTrue(any('malformed tag' in e for e in errors),
+                       f'expected malformed tag error: {errors}')
+
+    def test_stable_tag_publication_passes(self):
+        """Stable tag v3.1.8 should pass publication identity with version 3.1.8."""
+        errors = validate_publication_identity(
+            addon_id='plugin.video.twitch',
+            version='3.1.8',
+            tag='v3.1.8')
+        self.assertEqual(errors, [], f'stable tag publication should pass: {errors}')
+
+    def test_dev_tag_publication_passes(self):
+        """Dev tag v3.1.8-dev should pass publication identity with version 3.1.8."""
+        errors = validate_publication_identity(
+            addon_id='plugin.video.twitch',
+            version='3.1.8',
+            tag='v3.1.8-dev')
+        self.assertEqual(errors, [], f'dev tag publication should pass: {errors}')
 
 
 if __name__ == '__main__':

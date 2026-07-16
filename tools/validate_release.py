@@ -14,29 +14,37 @@ from pathlib import Path
 
 
 DEV_TAG_SUFFIX = '-dev'
-DEV_TAG_PATTERN = re.compile(r'^v(.+)-dev$')
+STABLE_TAG_PATTERN = re.compile(r'^v(\d+\.\d+\.\d+)$')
+DEV_TAG_PATTERN = re.compile(r'^v(\d+\.\d+\.\d+)-dev$')
 
 
 def _extract_version_from_tag(tag):
     """Extract base version from a tag, handling -dev suffix.
 
-    Accepts:
+    Accepts (returns base version):
     - v3.1.8 -> 3.1.8
     - v3.1.8-dev -> 3.1.8
 
     Rejects (returns None):
     - v3.1.8-dev-extra (malformed -dev suffix)
-    - empty string
+    - v3.1 (missing patch)
+    - v3.1.8.0 (extra segment)
+    - v1.2.a (non-numeric)
+    - v (empty version)
     - tags not starting with 'v'
+    - empty string
 
-    Returns the base version string or None if malformed.
+    Returns the base version string (X.Y.Z) or None if malformed.
     """
     if not tag or not tag.startswith('v'):
         return None
     match = DEV_TAG_PATTERN.match(tag)
     if match:
         return match.group(1)
-    return tag[1:]
+    match = STABLE_TAG_PATTERN.match(tag)
+    if match:
+        return match.group(1)
+    return None
 
 
 def write_validation_evidence(path, evidence):

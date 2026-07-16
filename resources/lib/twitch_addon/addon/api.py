@@ -387,7 +387,7 @@ class Twitch:
         return self.error_check(results)
 
     @api_error_handler
-    @cache.cache_method(cache_limit=cache.limit)
+    @cache.cache_method(cache_limit=cache.limit, persist=False)
     def _get_video_token(self, video_id):
         results = self.usher.vod_token(video_id=video_id, headers=self.get_private_credential_headers())
         if 'token' in results:
@@ -430,18 +430,18 @@ class Twitch:
         return results
 
     @api_error_handler
-    @cache.cache_method(cache_limit=cache.limit)
+    @cache.cache_method(cache_limit=cache.limit, persist=False)
     def get_vod(self, video_id):
         results = self.usher.video(video_id, headers=self.get_private_credential_headers())
         return self.error_check(results, private=True)
 
     @api_error_handler
-    @cache.cache_method(cache_limit=cache.limit)
+    @cache.cache_method(cache_limit=cache.limit, persist=False)
     def get_clip(self, slug):
         return self.usher.clip(slug, headers=self.get_private_credential_headers())
 
     @api_error_handler
-    @cache.cache_method(cache_limit=cache.limit)
+    @cache.cache_method(cache_limit=cache.limit, persist=False)
     def get_live(self, name):
         low_latency = utils.get_low_latency()
         results = self.usher.live(name, headers=self.get_private_credential_headers(), low_latency=low_latency)
@@ -449,7 +449,7 @@ class Twitch:
 
     @api_error_handler
     @api_error_handler
-    @cache.cache_method(cache_limit=cache.limit)
+    @cache.cache_method(cache_limit=cache.limit, persist=False)
     def live_request(self, name):
         # Request streams with AV1, H.265/HEVC and H.264 support for Enhanced Broadcasting (2K/4K/1440p)
         # The supported_codecs parameter tells Twitch which codecs the client can handle
@@ -459,7 +459,7 @@ class Twitch:
         return self.error_check(results, private=True)
 
     @api_error_handler
-    @cache.cache_method(cache_limit=cache.limit)
+    @cache.cache_method(cache_limit=cache.limit, persist=False)
     def video_request(self, video_id):
         # Request streams with AV1, H.265/HEVC and H.264 support for Enhanced Broadcasting (2K/4K/1440p)
         # The supported_codecs parameter tells Twitch which codecs the client can handle

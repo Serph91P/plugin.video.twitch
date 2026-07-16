@@ -14,7 +14,7 @@ import time
 
 from base64 import b64decode
 from datetime import datetime
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 
 from .common import kodi, json_store
 from .strings import STRINGS
@@ -127,6 +127,45 @@ def append_headers(headers):
     if header_parts:
         return '|%s' % '&'.join(header_parts)
     return ''
+
+
+def set_inputstream_adaptive_properties(playback_item):
+    inputstream_property = 'inputstream'
+    kodi_version = kodi.get_kodi_version()
+    if kodi_version.major < 19:
+        inputstream_property += 'addon'
+    playback_item.setProperty(inputstream_property, 'inputstream.adaptive')
+    if kodi_version.major < 21:
+        playback_item.setProperty('inputstream.adaptive.manifest_type', 'hls')
+
+    playback_item.setProperty('inputstream.adaptive.stream_selection_type', 'fixed-res')
+    playback_item.setProperty('inputstream.adaptive.chooser_resolution_max', '4K')
+    playback_item.setProperty('inputstream.adaptive.ignore_display_resolution', 'true')
+    playback_item.setProperty(
+        'inputstream.adaptive.preferred_codecs', 'hev1,hvc1,av1,avc1,mp4a'
+    )
+
+    proxy_dict = get_proxy_dict()
+    if proxy_dict:
+        parsed = urlparse(proxy_dict['http'])
+        playback_item.setProperty('inputstream.adaptive.proxy_host', parsed.hostname)
+        playback_item.setProperty(
+            'inputstream.adaptive.proxy_port', str(parsed.port or 8080)
+        )
+        if parsed.username and parsed.password:
+            playback_item.setProperty(
+                'inputstream.adaptive.proxy_username', parsed.username
+            )
+            playback_item.setProperty(
+                'inputstream.adaptive.proxy_password', parsed.password
+            )
+        from .common import log_utils
+        log_utils.log(
+            'Configured inputstream.adaptive proxy: {}:{}'.format(
+                parsed.hostname, parsed.port or 8080
+            ),
+            log_utils.LOGINFO,
+        )
 
 
 def get_redirect_uri():

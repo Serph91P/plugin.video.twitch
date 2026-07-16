@@ -10,6 +10,7 @@
     See LICENSES/GPL-3.0-only for more information.
 """
 
+import re
 import time
 
 from . import kodi
@@ -18,9 +19,31 @@ from xbmc import LOGDEBUG, LOGERROR, LOGFATAL, LOGINFO, LOGNONE, LOGWARNING  # @
 
 LOGNOTICE = LOGINFO
 
+_AUTHORIZATION_PATTERN = re.compile(
+    r"(authorization['\"]?\s*[:=]\s*['\"]?)"
+    r"(?:(?:bearer|oauth)(?:\s+|\+))?[^'\"\s,}&|]+",
+    re.IGNORECASE,
+)
+_PROXY_CREDENTIALS_PATTERN = re.compile(r'(https?://)[^\s]+@', re.IGNORECASE)
+_ENCODED_PROXY_CREDENTIALS_PATTERN = re.compile(
+    r'(https?%3A%2F%2F)[^&|\s]+%40', re.IGNORECASE
+)
+_SIGNED_QUERY_PATTERN = re.compile(
+    r'([?&|](?:token|sig|signature)=)[^&#|\s\'\"]+', re.IGNORECASE
+)
+
+
+def _redact_sensitive_values(msg):
+    msg = '%s' % msg
+    msg = _AUTHORIZATION_PATTERN.sub(r'\1[REDACTED]', msg)
+    msg = _PROXY_CREDENTIALS_PATTERN.sub(r'\1[REDACTED]@', msg)
+    msg = _ENCODED_PROXY_CREDENTIALS_PATTERN.sub(r'\1[REDACTED]%40', msg)
+    return _SIGNED_QUERY_PATTERN.sub(r'\1[REDACTED]', msg)
+
 
 def log(msg, level=LOGDEBUG):
     try:
+        msg = _redact_sensitive_values(msg)
         if kodi.is_unicode(msg):
             msg = '%s (ENCODED)' % msg.encode('utf-8')
         kodi.__log('%s: %s' % (kodi.get_name(), msg), level)

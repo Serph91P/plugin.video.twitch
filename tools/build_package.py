@@ -230,6 +230,8 @@ def validate_manifest_references(output_path, source_dir):
     The ZIP uses rooted topology where every member is prefixed with
     the addon ID directory. Local references from addon.xml are checked
     against the ZIP contents under that root.
+
+    Validates both the source addon.xml and the embedded addon.xml in the ZIP.
     """
     source_dir = Path(source_dir)
     output_path = Path(output_path)
@@ -239,19 +241,32 @@ def validate_manifest_references(output_path, source_dir):
     addon_xml_text = addon_xml.read_text(encoding='utf-8')
     expected_id, _, _ = _parse_addon_identity(addon_xml_text)
 
+    # Validate references from source addon.xml
     local_refs = _extract_local_references(addon_xml_text)
-    if not local_refs:
-        return errors
+    if local_refs:
+        prefix = expected_id + '/'
+        with zipfile.ZipFile(output_path, 'r') as zf:
+            names = set(zf.namelist())
+            for ref in local_refs:
+                rooted_ref = prefix + ref
+                if rooted_ref not in names:
+                    errors.append(
+                        f'manifest-referenced local asset missing from package: {ref}'
+                    )
 
-    prefix = expected_id + '/'
-
+    # Validate references from embedded addon.xml in ZIP
     with zipfile.ZipFile(output_path, 'r') as zf:
-        names = zf.namelist()
-        for ref in local_refs:
-            rooted_ref = prefix + ref
-            if rooted_ref not in names:
-                errors.append(
-                    f'manifest-referenced local asset missing from package: {ref}'
-                )
+        names = set(zf.namelist())
+        rooted_addon_xml = expected_id + '/addon.xml'
+        if rooted_addon_xml in names:
+            with zf.open(rooted_addon_xml) as f:
+                embedded_xml_text = f.read().decode('utf-8')
+            embedded_refs = _extract_local_references(embedded_xml_text)
+            for ref in embedded_refs:
+                rooted_ref = expected_id + '/' + ref
+                if rooted_ref not in names:
+                    errors.append(
+                        f'embedded manifest-referenced local asset missing from package: {ref}'
+                    )
 
     return errors

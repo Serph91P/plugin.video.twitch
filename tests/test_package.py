@@ -322,7 +322,7 @@ class ManifestReferenceTests(unittest.TestCase):
                 names = [n for n in zf.namelist()
                          if not n.endswith('addon_runner.py')]
                 with _zf.ZipFile(Path(tmpdir) / 'modified.zip', 'w',
-                                 _zf.ZIP_DEFLATED) as out_zf:
+                                  _zf.ZIP_DEFLATED) as out_zf:
                     for name in names:
                         out_zf.writestr(name, zf.read(name))
             errors = validate_manifest_references(
@@ -339,7 +339,7 @@ class ManifestReferenceTests(unittest.TestCase):
                 names = [n for n in zf.namelist()
                          if 'icon.png' not in n]
                 with _zf.ZipFile(Path(tmpdir) / 'modified.zip', 'w',
-                                 _zf.ZIP_DEFLATED) as out_zf:
+                                  _zf.ZIP_DEFLATED) as out_zf:
                     for name in names:
                         out_zf.writestr(name, zf.read(name))
             errors = validate_manifest_references(
@@ -363,6 +363,46 @@ class ManifestReferenceTests(unittest.TestCase):
             build_package(ROOT, output)
             errors = validate_manifest_references(output, ROOT)
             self.assertEqual(errors, [])
+
+    def test_embedded_manifest_missing_reference_rejected(self):
+        """Embedded addon.xml referencing a missing local module must be rejected."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / 'plugin.video.twitch-3.1.8.zip'
+            build_package(ROOT, output)
+            import zipfile as _zf
+            # Read all data from original zip first
+            with _zf.ZipFile(output, 'r') as zf:
+                names = list(zf.namelist())
+                # Read all files into memory
+                file_data = {name: zf.read(name) for name in names}
+                # Find and read the original addon.xml
+                original_addon_xml = None
+                for name in names:
+                    if name.endswith('addon.xml'):
+                        original_addon_xml = file_data[name].decode('utf-8')
+                        break
+            # Now create the modified zip (overwrite the original)
+            with _zf.ZipFile(output, 'w',
+                              _zf.ZIP_DEFLATED) as out_zf:
+                for name in names:
+                    if name.endswith('addon.xml'):
+                        # Add a reference to a missing module
+                        modified_xml = original_addon_xml.replace(
+                            '<extension point="xbmc.service" library="resources/lib/service_runner.py"/>',
+                            '<extension point="xbmc.service" library="resources/lib/service_runner.py"/>\n'
+                            '    <extension point="xbmc.python.pluginsource" library="resources/lib/missing_module.py">\n'
+                            '        <provides>video</provides>\n'
+                            '    </extension>'
+                        )
+                        out_zf.writestr(name, modified_xml.encode('utf-8'))
+                    else:
+                        out_zf.writestr(name, file_data[name])
+            # validate_package should reject this because the embedded manifest
+            # references a missing local module
+            errors = validate_package(output, ROOT)
+            self.assertTrue(len(errors) > 0, 'expected error for missing embedded manifest reference')
+            self.assertTrue(any('missing_module.py' in e for e in errors),
+                           f'expected missing_module.py reference error: {errors}')
 
 
 if __name__ == '__main__':

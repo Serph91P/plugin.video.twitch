@@ -9,7 +9,34 @@ artifact, not rebuild it.
 
 import hashlib
 import json
+import re
 from pathlib import Path
+
+
+DEV_TAG_SUFFIX = '-dev'
+DEV_TAG_PATTERN = re.compile(r'^v(.+)-dev$')
+
+
+def _extract_version_from_tag(tag):
+    """Extract base version from a tag, handling -dev suffix.
+
+    Accepts:
+    - v3.1.8 -> 3.1.8
+    - v3.1.8-dev -> 3.1.8
+
+    Rejects (returns None):
+    - v3.1.8-dev-extra (malformed -dev suffix)
+    - empty string
+    - tags not starting with 'v'
+
+    Returns the base version string or None if malformed.
+    """
+    if not tag or not tag.startswith('v'):
+        return None
+    match = DEV_TAG_PATTERN.match(tag)
+    if match:
+        return match.group(1)
+    return tag[1:]
 
 
 def write_validation_evidence(path, evidence):
@@ -85,8 +112,10 @@ def validate_release_contract(evidence, artifact_path, expected_tag, expected_sh
             f'tag mismatch: evidence={evidence["tag"]}, expected={expected_tag}'
         )
 
-    version_from_tag = expected_tag.lstrip('v') if expected_tag else ''
-    if version_from_tag and version_from_tag != evidence['addon_version']:
+    version_from_tag = _extract_version_from_tag(expected_tag) if expected_tag else None
+    if version_from_tag is None and expected_tag:
+        errors.append(f'malformed tag: {expected_tag}')
+    elif version_from_tag and version_from_tag != evidence['addon_version']:
         errors.append(
             f'tag version mismatch: tag implies {version_from_tag}, '
             f'evidence version={evidence["addon_version"]}'
@@ -132,8 +161,10 @@ def validate_publication_identity(addon_id, version, tag, expected_addon_id=None
         errors.append('addon_id, version, and tag are all required')
         return errors
 
-    version_from_tag = tag.lstrip('v')
-    if version_from_tag != version:
+    version_from_tag = _extract_version_from_tag(tag)
+    if version_from_tag is None:
+        errors.append(f'malformed tag: {tag}')
+    elif version_from_tag != version:
         errors.append(
             f'tag-version mismatch: tag={tag} implies {version_from_tag}, '
             f'version={version}'

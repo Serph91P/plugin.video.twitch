@@ -126,6 +126,56 @@ class TagVersionMismatchTests(unittest.TestCase):
         self.assertTrue(any('tag' in e.lower() or 'version' in e.lower()
                            for e in errors))
 
+    def test_dev_tag_with_matching_version_passes(self):
+        """Dev tag v3.1.8-dev should pass when addon_version is 3.1.8."""
+        evidence = _make_evidence(tag='v3.1.8-dev', addon_version='3.1.8')
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact = Path(tmpdir) / 'plugin.video.twitch-3.1.8.zip'
+            checksum = _make_artifact(artifact, addon_id='plugin.video.twitch')
+            evidence['artifact_sha256'] = checksum
+            errors = validate_release_contract(
+                evidence, artifact, expected_tag='v3.1.8-dev',
+                expected_sha=evidence['candidate_sha'])
+            self.assertEqual(errors, [], f'dev tag should pass: {errors}')
+
+    def test_dev_tag_with_mismatched_version_fails(self):
+        """Dev tag v3.1.8-dev should fail when addon_version is 3.1.9."""
+        evidence = _make_evidence(tag='v3.1.8-dev', addon_version='3.1.9')
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact = Path(tmpdir) / 'plugin.video.twitch-3.1.9.zip'
+            checksum = _make_artifact(artifact)
+            evidence['artifact_sha256'] = checksum
+            errors = validate_release_contract(
+                evidence, artifact, expected_tag='v3.1.8-dev',
+                expected_sha=evidence['candidate_sha'])
+            self.assertTrue(any('version' in e.lower() for e in errors),
+                           f'expected version mismatch error: {errors}')
+
+    def test_malformed_dev_tag_rejected(self):
+        """Dev tag v3.1.8-dev-extra should be rejected as malformed."""
+        evidence = _make_evidence(tag='v3.1.8-dev-extra', addon_version='3.1.8')
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact = Path(tmpdir) / 'plugin.video.twitch-3.1.8.zip'
+            checksum = _make_artifact(artifact)
+            evidence['artifact_sha256'] = checksum
+            errors = validate_release_contract(
+                evidence, artifact, expected_tag='v3.1.8-dev-extra',
+                expected_sha=evidence['candidate_sha'])
+            self.assertTrue(len(errors) > 0, f'malformed dev tag should fail: {errors}')
+
+    def test_dev_tag_mismatched_base_version_fails(self):
+        """Dev tag v3.1.9-dev should fail when addon_version is 3.1.8."""
+        evidence = _make_evidence(tag='v3.1.9-dev', addon_version='3.1.8')
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact = Path(tmpdir) / 'plugin.video.twitch-3.1.8.zip'
+            checksum = _make_artifact(artifact)
+            evidence['artifact_sha256'] = checksum
+            errors = validate_release_contract(
+                evidence, artifact, expected_tag='v3.1.9-dev',
+                expected_sha=evidence['candidate_sha'])
+            self.assertTrue(any('version' in e.lower() for e in errors),
+                           f'expected version mismatch error: {errors}')
+
 
 class MissingInputTests(unittest.TestCase):
     def test_missing_artifact_fails(self):
@@ -171,6 +221,30 @@ class PublicationIdentityTests(unittest.TestCase):
             tag='v3.1.8',
             expected_addon_id='plugin.video.twitch')
         self.assertTrue(len(errors) > 0)
+
+    def test_dev_tag_publication_passes(self):
+        """Dev tag v3.1.8-dev should pass publication identity with version 3.1.8."""
+        errors = validate_publication_identity(
+            addon_id='plugin.video.twitch',
+            version='3.1.8',
+            tag='v3.1.8-dev')
+        self.assertEqual(errors, [], f'dev tag publication should pass: {errors}')
+
+    def test_dev_tag_publication_mismatch_fails(self):
+        """Dev tag v3.1.9-dev should fail publication identity with version 3.1.8."""
+        errors = validate_publication_identity(
+            addon_id='plugin.video.twitch',
+            version='3.1.8',
+            tag='v3.1.9-dev')
+        self.assertTrue(len(errors) > 0, f'dev tag mismatch should fail: {errors}')
+
+    def test_malformed_dev_tag_publication_rejected(self):
+        """Malformed dev tag v3.1.8-dev-extra should be rejected."""
+        errors = validate_publication_identity(
+            addon_id='plugin.video.twitch',
+            version='3.1.8',
+            tag='v3.1.8-dev-extra')
+        self.assertTrue(len(errors) > 0, f'malformed dev tag should fail: {errors}')
 
 
 if __name__ == '__main__':

@@ -156,8 +156,7 @@ jobs:
 
       - name: Extract runtime package
         run: |
-          mkdir -p plugin.video.twitch
-          unzip dist/*.zip -d plugin.video.twitch
+          unzip dist/*.zip -d .
 
       - name: Set up Python
         uses: actions/setup-python@v5

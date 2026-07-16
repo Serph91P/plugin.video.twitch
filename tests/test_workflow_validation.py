@@ -116,6 +116,16 @@ class AddonValidationsStructureTests(unittest.TestCase):
         self.assertFalse(has_checkout,
                          'kodi-check should not checkout the full repository')
 
+    def test_kodi_checker_extracts_rooted_archive_without_double_nesting(self):
+        job = self.data['jobs']['kodi-check']
+        extract_step = next(
+            step for step in job['steps']
+            if step.get('name') == 'Extract runtime package'
+        )
+        run = extract_step.get('run', '')
+        self.assertIn('unzip dist/*.zip -d .', run)
+        self.assertNotIn('mkdir -p plugin.video.twitch', run)
+
 
 @unittest.skipUnless(_HAS_YAML, 'pyyaml not installed')
 class MakeReleaseStructureTests(unittest.TestCase):

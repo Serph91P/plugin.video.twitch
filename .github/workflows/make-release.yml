@@ -102,13 +102,17 @@ jobs:
             const allRuns = [...runs.data.workflow_runs, ...defaultRuns.data.workflow_runs];
             let found = null;
             for (const run of allRuns) {
-              if (run.name === 'Add-on Validations' && run.conclusion === 'success') {
+              if (
+                run.name === 'Add-on Validations'
+                && run.conclusion === 'success'
+                && run.head_sha === context.sha
+              ) {
                 found = run;
                 break;
               }
             }
             if (!found) {
-              core.setFailed('No successful validation run found');
+              core.setFailed(`No successful validation run found for ${context.sha}`);
               return;
             }
             core.setOutput('validation_run_id', found.id);
@@ -117,6 +121,7 @@ jobs:
       - name: Download validation evidence
         uses: actions/download-artifact@v4
         with:
+          github-token: ${{ github.token }}
           name: validation-evidence
           run-id: ${{ steps.find-run.outputs.validation_run_id }}
           path: validation-artifacts
@@ -124,6 +129,7 @@ jobs:
       - name: Download validated package
         uses: actions/download-artifact@v4
         with:
+          github-token: ${{ github.token }}
           name: addon-package
           run-id: ${{ steps.find-run.outputs.validation_run_id }}
           path: validation-artifacts

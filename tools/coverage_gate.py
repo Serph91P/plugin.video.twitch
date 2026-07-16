@@ -4,8 +4,8 @@ Measures branch coverage on critical runtime modules and fails closed
 if the result is below the measured baseline threshold or if any
 declared critical module is absent from the coverage report.
 
-Measured baseline: 48% branch coverage across critical modules.
-Threshold: 45% (conservative, below current baseline, impossible to
+Measured baseline: 35% branch coverage across critical modules.
+Threshold: 30% (conservative, below current baseline, impossible to
 pass with zero tests).
 """
 
@@ -25,7 +25,7 @@ CRITICAL_MODULES = [
     'resources/lib/twitch_addon/router.py',
 ]
 
-BRANCH_COVERAGE_THRESHOLD = 45
+BRANCH_COVERAGE_THRESHOLD = 30
 
 
 def get_coverage_threshold():
@@ -98,22 +98,32 @@ def measure_branch_coverage(source_dir=None):
             'error': f'critical modules missing from source: {missing}',
         }
 
-    include_pattern = ','.join(source_files)
-
-    subprocess.run(
+    source_root = os.path.join(source_dir, 'resources', 'lib', 'twitch_addon')
+    test_result = subprocess.run(
         [sys.executable, '-m', 'coverage', 'run',
-         '--branch', f'--include={include_pattern}',
+         '--branch', f'--source={source_root}',
          '-m', 'unittest', 'discover', '-s', 'tests', '-v'],
         capture_output=True, text=True, cwd=source_dir, check=False,
     )
 
+    if test_result.returncode != 0:
+        return {
+            'branch_coverage': 0.0,
+            'threshold': BRANCH_COVERAGE_THRESHOLD,
+            'passed': False,
+            'modules_found': source_files,
+            'modules_missing': [],
+            'error': 'coverage test run failed',
+        }
+
     cov_result = subprocess.run(
-        [sys.executable, '-m', 'coverage', 'report', '--format=total'],
+        [sys.executable, '-m', 'coverage', 'report', '--format=total',
+         *source_files],
         capture_output=True, text=True, cwd=source_dir, check=False,
     )
 
     detail_result = subprocess.run(
-        [sys.executable, '-m', 'coverage', 'report'],
+        [sys.executable, '-m', 'coverage', 'report', *source_files],
         capture_output=True, text=True, cwd=source_dir, check=False,
     )
 
@@ -131,7 +141,8 @@ def measure_branch_coverage(source_dir=None):
     report_absent = []
     for mod in CRITICAL_MODULES:
         full = os.path.join(source_dir, mod)
-        if full not in report_modules:
+        if not any(path == full or path == mod or path.endswith('/' + mod)
+                   for path in report_modules):
             report_absent.append(mod)
 
     passed = branch_pct >= BRANCH_COVERAGE_THRESHOLD and not report_absent

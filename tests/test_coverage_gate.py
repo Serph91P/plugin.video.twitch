@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -21,6 +22,7 @@ from tools.coverage_gate import (
     check_critical_module_presence,
     get_critical_modules,
     get_coverage_threshold,
+    measure_branch_coverage,
 )
 
 
@@ -77,7 +79,6 @@ class ModulePresenceTests(unittest.TestCase):
 
     def test_gate_fails_when_partial_modules_missing(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            real_mod = ROOT / CRITICAL_MODULES[0]
             dest = Path(tmpdir) / CRITICAL_MODULES[0]
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text('# stub\n')
@@ -135,6 +136,58 @@ class CoverageReportParsingTests(unittest.TestCase):
         )
         result = _parse_coverage_report_modules(report)
         self.assertIn(full_path, result)
+
+
+class CoverageMeasurementTests(unittest.TestCase):
+    def _report(self, modules):
+        rows = [
+            'Name Stmts Miss Branch BrPart Cover',
+            '------------------------------------------------',
+        ]
+        rows.extend(f'{module} 10 1 2 0 83%' for module in modules)
+        rows.append('TOTAL 60 6 12 0 83%')
+        return '\n'.join(rows)
+
+    @mock.patch('tools.coverage_gate.subprocess.run')
+    def test_measurement_fails_when_report_omits_critical_module(self, run):
+        run.side_effect = [
+            mock.Mock(returncode=0, stdout='', stderr=''),
+            mock.Mock(returncode=0, stdout='35\n', stderr=''),
+            mock.Mock(
+                returncode=0,
+                stdout=self._report(CRITICAL_MODULES[:-1]),
+                stderr='',
+            ),
+        ]
+
+        result = measure_branch_coverage(str(ROOT))
+
+        self.assertFalse(result['passed'])
+        self.assertEqual(result['modules_missing'], [CRITICAL_MODULES[-1]])
+
+    @mock.patch('tools.coverage_gate.subprocess.run')
+    def test_measurement_reports_every_critical_module(self, run):
+        run.side_effect = [
+            mock.Mock(returncode=0, stdout='', stderr=''),
+            mock.Mock(returncode=0, stdout='35\n', stderr=''),
+            mock.Mock(
+                returncode=0,
+                stdout=self._report(CRITICAL_MODULES),
+                stderr='',
+            ),
+        ]
+
+        result = measure_branch_coverage(str(ROOT))
+
+        self.assertTrue(result['passed'])
+        self.assertEqual(result['modules_missing'], [])
+        coverage_command = run.call_args_list[0].args[0]
+        self.assertTrue(any(arg.startswith('--source=')
+                            for arg in coverage_command))
+        for module in CRITICAL_MODULES:
+            full = os.path.join(str(ROOT), module)
+            self.assertIn(full, run.call_args_list[1].args[0])
+            self.assertIn(full, run.call_args_list[2].args[0])
 
 
 if __name__ == '__main__':

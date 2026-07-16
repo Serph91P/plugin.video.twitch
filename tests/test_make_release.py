@@ -238,6 +238,25 @@ class MakeReleaseImmutableContractTests(unittest.TestCase):
         self.assertEqual(len(run_ids), 1,
                          f'downloads must use the same run-id, got: {run_ids}')
 
+    def test_validation_run_is_selected_for_exact_candidate_sha(self):
+        find_step = next(
+            step for step in self.job['steps']
+            if step.get('id') == 'find-run'
+        )
+        script = find_step.get('with', {}).get('script', '')
+        self.assertIn('run.head_sha === context.sha', script)
+
+    def test_cross_run_artifact_downloads_are_authenticated(self):
+        download_steps = [
+            step for step in self.job['steps']
+            if 'download-artifact' in step.get('uses', '')
+        ]
+        for step in download_steps:
+            self.assertEqual(
+                step.get('with', {}).get('github-token'),
+                '${{ github.token }}',
+            )
+
 
 if __name__ == '__main__':
     unittest.main()

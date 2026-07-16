@@ -219,12 +219,16 @@ class SearchHistoryRegressionTests(unittest.TestCase):
     def test_max_one_overflow_keeps_only_newest_without_locking(self):
         with tempfile.TemporaryDirectory() as directory:
             module = load_search_history(Path(directory))
-            history = module.SearchHistory('streams_search', max_items=1)
+            history = module.SearchHistory('streams_search', max_items=10)
 
             history.update('first')
             history.update('second')
+            history.update('third')
 
-            self.assertEqual(['second'], history.list())
+            history = module.SearchHistory('streams_search', max_items=1)
+            history.update('fourth')
+
+            self.assertEqual(['fourth'], history.list())
 
     def test_retention_preserves_newest_first_at_zero_and_two(self):
         cases = (

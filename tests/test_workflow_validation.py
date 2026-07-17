@@ -184,13 +184,37 @@ class NotifyRepositoryStructureTests(unittest.TestCase):
             ROOT / '.github' / 'workflows' / 'notify-repository.yml'
         )
 
-    def test_has_sha_validation_step(self):
-        job = self.data['jobs']['version-and-notify']
+    def test_has_validation_step(self):
+        job = self.data['jobs']['validated-publication']
         step_names = [s.get('name', '') for s in job['steps']]
-        has_validation = any('valid' in n.lower() or 'sha' in n.lower()
-                           for n in step_names)
+        has_validation = any('valid' in n.lower() for n in step_names)
         self.assertTrue(has_validation,
-                        'no SHA validation step found in notify workflow')
+                        'no validation step found in notify workflow')
+
+    def test_uses_github_script(self):
+        job = self.data['jobs']['validated-publication']
+        step_uses = [s.get('uses', '') for s in job['steps']]
+        has_script = any('github-script' in u for u in step_uses)
+        self.assertTrue(has_script,
+                        'notify workflow must use github-script action')
+
+    def test_permissions_declared(self):
+        self.assertIn('permissions', self.data)
+        perms = self.data['permissions']
+        self.assertIn('actions', perms)
+        self.assertEqual(perms['actions'], 'read')
+
+    def test_workflow_run_trigger(self):
+        trigger_key = 'on' if 'on' in self.data else True
+        trigger = self.data[trigger_key]
+        self.assertIn('workflow_run', trigger)
+        wr = trigger['workflow_run']
+        self.assertIn('Add-on Validations', wr['workflows'])
+        self.assertIn('completed', wr['types'])
+
+    def test_job_has_if_condition(self):
+        job = self.data['jobs']['validated-publication']
+        self.assertIn('if', job, 'job must have an if gate')
 
 
 @unittest.skipUnless(_HAS_YAML, 'pyyaml not installed')

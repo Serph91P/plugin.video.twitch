@@ -103,14 +103,14 @@ class ParseAddonIdentityTests(unittest.TestCase):
 
 class BuildPackageTests(unittest.TestCase):
     def _expected_output(self, tmpdir):
-        return Path(tmpdir) / 'plugin.video.twitch-3.1.8.zip'
+        return Path(tmpdir) / 'plugin.video.twitch-3.1.11.zip'
 
     def test_build_and_validate_package(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             output = self._expected_output(tmpdir)
             info = build_package(ROOT, output)
             self.assertEqual(info['addon_id'], 'plugin.video.twitch')
-            self.assertEqual(info['addon_version'], '3.1.8')
+            self.assertEqual(info['addon_version'], '3.1.11')
             self.assertTrue(info['member_count'] > 50)
             self.assertTrue(output.exists())
 
@@ -121,7 +121,7 @@ class BuildPackageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             output = self._expected_output(tmpdir)
             info = build_package(ROOT, output)
-            self.assertEqual(info['filename'], 'plugin.video.twitch-3.1.8.zip')
+            self.assertEqual(info['filename'], 'plugin.video.twitch-3.1.11.zip')
 
     def test_package_is_deterministic(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -185,10 +185,10 @@ class BuildPackageTests(unittest.TestCase):
                     text = f.read().decode('utf-8')
                 aid, ver, _ = _parse_addon_identity(text)
                 self.assertEqual(aid, 'plugin.video.twitch')
-                self.assertEqual(ver, '3.1.8')
+                self.assertEqual(ver, '3.1.11')
 
     def test_validate_package_rejects_wrong_filename(self):
-        """validate_package rejects dist/addon.zip because the identity filename is plugin.video.twitch-3.1.8.zip."""
+        """validate_package rejects dist/addon.zip because the identity filename is plugin.video.twitch-3.1.11.zip."""
         with tempfile.TemporaryDirectory() as tmpdir:
             output = Path(tmpdir) / 'addon.zip'
             build_package(ROOT, output)
@@ -367,7 +367,7 @@ class ManifestReferenceTests(unittest.TestCase):
     def test_embedded_manifest_missing_reference_rejected(self):
         """Embedded addon.xml referencing a missing local module must be rejected."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            output = Path(tmpdir) / 'plugin.video.twitch-3.1.8.zip'
+            output = Path(tmpdir) / 'plugin.video.twitch-3.1.11.zip'
             build_package(ROOT, output)
             import zipfile as _zf
             # Read all data from original zip first

@@ -16,10 +16,11 @@ jobs:
       && github.event.workflow_run.event == 'push'
       && github.event.workflow_run.head_branch == 'develop'
     steps:
-      - name: Validate run and dispatch notification
+      - name: Validate run and build payload
+        id: validate
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.REPO_DISPATCH_TOKEN }}
+          github-token: ${{ github.token }}
           script: |
             const run = github.context.payload.workflow_run;
 
@@ -79,6 +80,11 @@ jobs:
               }
             }
 
+            if (allArtifacts.length < totalCount) {
+              core.setFailed('Incomplete pagination: fetched ' + allArtifacts.length + ' of ' + totalCount + ' artifacts');
+              return;
+            }
+
             const addonPackages = allArtifacts.filter(a => a.name === 'addon-package');
             const validAddonPackages = addonPackages.filter(a => !a.expired);
             if (addonPackages.length !== 1) {
@@ -110,11 +116,13 @@ jobs:
               expected_branch: run.head_branch,
             };
 
-            await github.rest.repos.createDispatchEvent({
-              owner: 'Serph91P',
-              repo: 'repository.serph91p',
-              event_type: 'validated-addon-publication',
-              client_payload: payload,
-            });
+            core.setOutput('payload', JSON.stringify(payload));
+            core.info('Payload ready for dispatch to Serph91P/repository.serph91p');
 
-            core.info('Dispatched validated-addon-publication to Serph91P/repository.serph91p');
+      - name: Dispatch publication notification
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.REPO_DISPATCH_TOKEN }}
+          repository: Serph91P/repository.serph91p
+          event-type: validated-addon-publication
+          client-payload: ${{ steps.validate.outputs.payload }}

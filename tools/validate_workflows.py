@@ -114,39 +114,117 @@ def _pip_install_argument_sets(command):
 
     argument_sets = []
     for tokens in commands:
-        index = 0
-        while index < len(tokens) and re.fullmatch(
-            r'[A-Za-z_][A-Za-z0-9_]*=.*', tokens[index]
-        ):
-            index += 1
-        if index < len(tokens) and Path(tokens[index]).name == 'env':
-            index += 1
-            while index < len(tokens) and re.fullmatch(
-                r'[A-Za-z_][A-Za-z0-9_]*=.*', tokens[index]
-            ):
-                index += 1
-        if index >= len(tokens):
-            continue
-
-        executable = Path(tokens[index]).name
-        if re.fullmatch(r'pip(?:\d+(?:\.\d+)?)?', executable):
-            pip_arguments = tokens[index + 1:]
-        elif (
-            re.fullmatch(r'python(?:\d+(?:\.\d+)?)?', executable)
-            and len(tokens) >= index + 4
-            and tokens[index + 1] == '-m'
-            and tokens[index + 2] == 'pip'
-        ):
-            pip_arguments = tokens[index + 3:]
-        else:
-            continue
-
-        try:
-            install_index = pip_arguments.index('install')
-        except ValueError:
-            continue
-        argument_sets.append(pip_arguments[install_index + 1:])
+        argument_sets.extend(_extract_pip_install_from_tokens(tokens))
     return argument_sets
+
+
+def _extract_pip_install_from_tokens(tokens, index=0):
+    """Recursively extract pip install argument sets from token list.
+    Handles command/env prefixes, shell wrappers (bash -c, sh -c), and command/exec.
+    """
+    argument_sets = []
+    n = len(tokens)
+    if index >= n:
+        return argument_sets
+
+    # Skip environment variable assignments
+    while index < n and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*=.*', tokens[index]):
+        index += 1
+
+    # Skip 'env' command with its options (--ignore-environment, -i), assignments, and -- separator
+    if index < n and Path(tokens[index]).name == 'env':
+        index += 1
+        while index < n and (
+            re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*=.*', tokens[index])
+            or tokens[index] in ('-i', '--ignore-environment')
+        ):
+            index += 1
+        if index < n and tokens[index] == '--':
+            index += 1
+
+    if index >= n:
+        return argument_sets
+
+    executable = Path(tokens[index]).name
+
+    # Handle 'command' and 'exec' prefixes - skip options and -- separator
+    if executable in ('command', 'exec'):
+        index += 1
+        # Skip command/exec options like -p, -v, -V, -a label
+        while index < n and tokens[index].startswith('-') and tokens[index] != '--':
+            if tokens[index] == '-a':
+                index += 2  # skip -a and its label
+            else:
+                index += 1
+        if index < n and tokens[index] == '--':
+            index += 1
+        return _extract_pip_install_from_tokens(tokens, index)
+
+    # Handle shell wrappers: bash/sh with -c or option clusters containing c
+    if executable in ('bash', 'sh'):
+        index += 1
+        # Scan for -c or option cluster containing c, and get the following command string
+        shell_command = _find_shell_command_arg(tokens, index, n)
+        if shell_command is not None:
+            argument_sets.extend(_pip_install_argument_sets(shell_command))
+        return argument_sets
+
+    # Direct pip or python -m pip
+    if re.fullmatch(r'pip(?:\d+(?:\.\d+)?)?', executable):
+        pip_arguments = tokens[index + 1:]
+    elif (
+        re.fullmatch(r'python(?:\d+(?:\.\d+)?)?', executable)
+        and index + 3 < n
+        and tokens[index + 1] == '-m'
+        and tokens[index + 2] == 'pip'
+    ):
+        pip_arguments = tokens[index + 3:]
+    else:
+        return argument_sets
+
+    try:
+        install_index = pip_arguments.index('install')
+    except ValueError:
+        return argument_sets
+
+    argument_sets.append(pip_arguments[install_index + 1:])
+    return argument_sets
+
+
+def _find_shell_command_arg(tokens, index, n):
+    """Find the shell command string argument for bash/sh -c.
+    Handles: -c "cmd", -c 'cmd', -lc "cmd", -cl "cmd", --longopt -c "cmd", -c -l "cmd"
+    Returns the command string or None if not found.
+    """
+    while index < n:
+        token = tokens[index]
+        # Long option (--foo)
+        if token.startswith('--'):
+            index += 1
+            continue
+        # Standalone -c (check BEFORE short option cluster)
+        if token == '-c':
+            index += 1
+            # Skip any additional options after -c (e.g., -l in bash -c -l "cmd")
+            while index < n and tokens[index].startswith('-') and len(tokens[index]) > 1:
+                index += 1
+            if index < n:
+                return tokens[index]
+            return None
+        # Short option cluster (-abc) or single short option (-l, -c)
+        if token.startswith('-') and len(token) > 1 and not token.startswith('--'):
+            # Check if this cluster contains 'c'
+            if 'c' in token[1:]:
+                # Next token should be the command string
+                if index + 1 < n:
+                    return tokens[index + 1]
+                return None
+            # Cluster without c, just skip
+            index += 1
+            continue
+        # Not an option, stop scanning
+        break
+    return None
 
 
 def _requirement_references(arguments):

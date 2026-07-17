@@ -287,6 +287,56 @@ class WorkflowPolicyTests(unittest.TestCase):
                 )
                 self.workflow['jobs']['test']['steps'].pop()
 
+    def test_rejects_wrapped_pip_install(self):
+        """Reject pip installs wrapped in command/exec/env/shell prefixes."""
+        commands = (
+            # command/exec plain
+            'command pip install pyyaml',
+            'exec pip install pyyaml',
+            'command python -m pip install pyyaml',
+            'exec python3 -m pip install pyyaml',
+            # command/exec with options and -- separator
+            'command -- pip install pyyaml',
+            'command -p -- pip install pyyaml',
+            'exec -- pip install pyyaml',
+            'exec -a installer pip install pyyaml',
+            'exec -a "my installer" pip install pyyaml',
+            # env with assignments, -i, --ignore-environment, and -- separator
+            'env FOO=bar command pip install pyyaml',
+            'env FOO=bar -- pip install pyyaml',
+            'env -- pip install pyyaml',
+            'env -i pip install pyyaml',
+            'env --ignore-environment pip install pyyaml',
+            # shell wrappers: bash/sh -c and option clusters containing c
+            'bash -c "pip install pyyaml"',
+            'bash -c \'pip install pyyaml\'',
+            'sh -c "pip install pyyaml"',
+            'sh -c \'python -m pip install pyyaml\'',
+            'bash -c "exec pip install pyyaml"',
+            'bash -lc "pip install pyyaml"',
+            'bash -ec "pip install pyyaml"',
+            'sh -lc "pip install pyyaml"',
+            'bash -c -l "pip install pyyaml"',
+            # bash long options before -c
+            'bash --noprofile -c "pip install pyyaml"',
+            'bash --norc -c "pip install pyyaml"',
+            'bash --noprofile --norc -c "pip install pyyaml"',
+            # chained commands
+            'true && command pip install pyyaml',
+            'true && exec python -m pip install pyyaml',
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.workflow['jobs']['test']['steps'].append({'run': command})
+                errors = validate_workflow_policy(
+                    self.workflow, 'addon-validations.yml'
+                )
+                self.assertTrue(
+                    any('hash-locked requirements' in e for e in errors),
+                    f'wrapped pip not rejected: {command}'
+                )
+                self.workflow['jobs']['test']['steps'].pop()
+
     def test_accepts_hash_locked_requirements(self):
         self.workflow['jobs']['test']['steps'].append({
             'run': 'python3 -m pip install '

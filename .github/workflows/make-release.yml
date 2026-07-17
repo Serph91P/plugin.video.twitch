@@ -124,6 +124,7 @@ jobs:
                 && run.conclusion === 'success'
                 && run.head_sha === context.sha
                 && eligibleBranches.includes(run.head_branch)
+                && run.event === 'push'
               ) {
                 found = run;
                 break;

@@ -17,9 +17,9 @@ jobs:
         run: |
           version=${GITHUB_REF/refs\/tags\//}
           if [[ $version == *-dev ]] ; then
-            echo "pre-release=true" >> $GITHUB_OUTPUT
+            echo "pre-release=true" >> "$GITHUB_OUTPUT"
           else
-            echo "pre-release=false" >> $GITHUB_OUTPUT
+            echo "pre-release=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Checkout Add-on
@@ -27,43 +27,188 @@ jobs:
         with:
           path: ${{ github.event.repository.name }}
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install libxml2-utils xmlstarlet zip
+          python -m pip install --upgrade pip
+          python -m pip install pyyaml
+
+      - name: Validate candidate commit
+        id: validate
+        working-directory: ${{ github.event.repository.name }}
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          python -c "
+          import os
+          from tools.validate_commit import git_rev_parse, validate_commit_sha
+          head_sha = git_rev_parse('HEAD')
+          expected_sha = os.environ['EXPECTED_SHA']
+          errors = validate_commit_sha(head_sha, expected_sha)
+          if errors:
+              print('COMMIT VALIDATION FAILED:')
+              for e in errors:
+                  print(f'  - {e}')
+              exit(1)
+          print(f'candidate_sha={head_sha}')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'candidate_sha={head_sha}\n')
+          "
 
       - name: Get Changelog
         id: changelog
-        run: |
-          changes=$(xmlstarlet sel -t -v '//news' -n addon.xml)
-          EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
-          echo "changes<<$EOF" >> $GITHUB_OUTPUT
-          echo "$changes" >> $GITHUB_OUTPUT
-          echo "$EOF" >> $GITHUB_OUTPUT
         working-directory: ${{ github.event.repository.name }}
+        run: |
+          python -c "
+          import os
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          text = Path('addon.xml').read_text(encoding='utf-8')
+          root = ET.fromstring(text)
+          news = root.find('.//news')
+          if news is not None and news.text:
+              print(news.text)
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                  f.write('changes<<CHANGELOG_EOF\n')
+                  f.write(news.text + '\n')
+                  f.write('CHANGELOG_EOF\n')
+          else:
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                  f.write('changes=\n')
+          "
 
-      - name: Create Zip
-        id: create-zip
-        run: |
-          git reset
-          git checkout .
-          git clean -fdx
-          mv .git ..
-          rm -rf .??*
-          rm -rf docs
-          rm *.md
-          version=$(xmlstarlet sel -t -v 'string(/addon/@version)' addon.xml)
-          filename=${{ github.event.repository.name }}-${version}.zip
-          cd ..
-          zip -r $filename ${{ github.event.repository.name }}
-          mv .git ${{ github.event.repository.name }}
-          echo "filename=$filename" >> $GITHUB_OUTPUT
+      - name: Find validation run
+        id: find-run
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runs = await github.rest.actions.listWorkflowRunsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              branch: context.ref.replace('refs/tags/', ''),
+              per_page: 5,
+            });
+            // Also search eligible validation branches for completed runs
+            const eligibleBranches = ['main', 'develop'];
+            const eligibleRuns = [];
+            for (const b of eligibleBranches) {
+              const resp = await github.rest.actions.listWorkflowRunsForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                branch: b,
+                per_page: 10,
+              });
+              eligibleRuns.push(...resp.data.workflow_runs);
+            }
+            const allRuns = [...runs.data.workflow_runs, ...eligibleRuns];
+            let found = null;
+            for (const run of allRuns) {
+              if (
+                run.name === 'Add-on Validations'
+                && run.conclusion === 'success'
+                && run.head_sha === context.sha
+              ) {
+                found = run;
+                break;
+              }
+            }
+            if (!found) {
+              core.setFailed(`No successful validation run found for ${context.sha}`);
+              return;
+            }
+            core.setOutput('validation_run_id', found.id);
+            core.setOutput('validation_sha', found.head_sha);
+
+      - name: Download validation evidence
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          name: validation-evidence
+          run-id: ${{ steps.find-run.outputs.validation_run_id }}
+          path: validation-artifacts
+
+      - name: Download validated package
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          name: addon-package
+          run-id: ${{ steps.find-run.outputs.validation_run_id }}
+          path: validation-artifacts
+
+      - name: Verify immutable release contract
+        id: contract
         working-directory: ${{ github.event.repository.name }}
+        env:
+          TAG: ${{ github.ref_name }}
+          CANDIDATE_SHA: ${{ steps.validate.outputs.candidate_sha }}
+        run: |
+          python -c "
+          import json, os, sys
+          from pathlib import Path
+          from tools.validate_release import (
+              load_validation_evidence,
+              validate_release_contract,
+              validate_publication_identity,
+          )
+          from tools.build_package import _parse_addon_identity
+
+          evidence_path = Path('../validation-artifacts/validation-evidence.json')
+          evidence = load_validation_evidence(evidence_path)
+
+          # Read addon.xml from checkout for version comparison
+          addon_xml = Path('addon.xml').read_text(encoding='utf-8')
+          addon_id, addon_version, _ = _parse_addon_identity(addon_xml)
+
+          # Find the artifact file
+          artifacts = list(Path('../validation-artifacts').glob('*.zip'))
+          if not artifacts:
+              print('ERROR: No validated artifact found')
+              sys.exit(1)
+          artifact = artifacts[0]
+
+          tag = os.environ['TAG']
+          candidate_sha = os.environ['CANDIDATE_SHA']
+
+          # Override evidence tag with the actual tag from this release trigger
+          evidence['tag'] = tag
+
+          errors = validate_release_contract(
+              evidence, artifact,
+              expected_tag=tag,
+              expected_sha=candidate_sha,
+          )
+
+          pub_errors = validate_publication_identity(
+              addon_id=addon_id,
+              version=addon_version,
+              tag=tag,
+              expected_addon_id=evidence['addon_id'],
+          )
+          errors.extend(pub_errors)
+
+          if errors:
+              print('RELEASE CONTRACT VIOLATIONS:')
+              for e in errors:
+                  print(f'  - {e}')
+              sys.exit(1)
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'filename={evidence[\"asset_name\"]}\n')
+              f.write(f'checksum={evidence[\"artifact_sha256\"]}\n')
+              f.write(f'version={evidence[\"addon_version\"]}\n')
+              f.write(f'addon_id={evidence[\"addon_id\"]}\n')
+          print('Release contract verified')
+          print(json.dumps(evidence, indent=2))
+          "
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ steps.create-zip.outputs.filename }}
+          files: validation-artifacts/${{ steps.contract.outputs.filename }}
           body: ${{ steps.changelog.outputs.changes }}
           prerelease: ${{ steps.release.outputs.pre-release }}
         env:

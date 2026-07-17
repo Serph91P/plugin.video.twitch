@@ -171,8 +171,24 @@ jobs:
             echo "version=${{ steps.detect.outputs.current_version }}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Trigger repository update
+      - name: Validate candidate SHA
+        id: validate-sha
         if: steps.detect.outputs.should_notify == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          PAYLOAD_SHA="${{ steps.payload.outputs.sha }}"
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          echo "payload_sha=$PAYLOAD_SHA" >> "$GITHUB_OUTPUT"
+          echo "actual_sha=$ACTUAL_SHA" >> "$GITHUB_OUTPUT"
+          if [ "$PAYLOAD_SHA" != "$ACTUAL_SHA" ]; then
+            echo "::error::Candidate SHA mismatch: payload=$PAYLOAD_SHA actual=$ACTUAL_SHA"
+            exit 1
+          fi
+          echo "SHA validation passed: $ACTUAL_SHA"
+
+      - name: Trigger repository update
+        if: steps.detect.outputs.should_notify == 'true' && steps.validate-sha.outcome == 'success'
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.REPO_DISPATCH_TOKEN }}

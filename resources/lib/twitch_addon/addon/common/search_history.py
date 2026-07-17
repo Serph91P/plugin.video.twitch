@@ -52,7 +52,6 @@ class SearchHistory:
 
     def close(self):
         self.cursor.execute('COMMIT')
-        self.cursor.execute('VACUUM')
 
         self.database.commit()
 
@@ -100,9 +99,8 @@ class SearchHistory:
 
         self.open()
         self.execute(query, values=[kodi.decode_utf8(value), timestamp])
+        self._trim()
         self.close()
-
-        self.trim()
 
     def remove(self, value):
         query = 'DELETE FROM %s WHERE value = ?' % self._table_name
@@ -116,14 +114,16 @@ class SearchHistory:
         self.update(new_value)
 
     def trim(self):
-        query = 'SELECT value FROM %s ORDER BY time DESC LIMIT -1 OFFSET %d' % (self._table_name, self._max_items)
-
         self.open()
-        ret_vals = self.execute(query)
-        if ret_vals is not None:
-            for item in ret_vals:
-                self.remove(item[0])
+        self._trim()
         self.close()
+
+    def _trim(self):
+        query = '''DELETE FROM %s WHERE rowid NOT IN
+            (SELECT rowid FROM %s ORDER BY time DESC LIMIT ?)''' % (
+                self._table_name, self._table_name
+            )
+        self.execute(query, [self._max_items])
 
     def upgrade(self):
         def _decode(obj):

@@ -165,16 +165,12 @@ def route(api, seek_time=0, channel_id=None, video_id=None, slug=None, ask=False
                                 (use_ia, is_live, 'None' if request is None else 'received'), log_utils.LOGDEBUG)
                     if request:
                         log_utils.log('Request keys: %s' % list(request.keys()), log_utils.LOGDEBUG)
-                        if kodi.get_kodi_version().major >= 18:
-                            request['headers']['verifypeer'] = 'false'
                         play_url = request['url'] + utils.append_headers(request['headers'])
                         log_utils.log('Built play_url from request: %s' % play_url[:100], log_utils.LOGDEBUG)
 
                 if not play_url:
                     play_url = result['url']
                     headers = {}
-                    if kodi.get_kodi_version().major >= 18:
-                        headers['verifypeer'] = 'false'
                     if 'request' in locals() and request and 'headers' in request:
                         headers.update(request['headers'])
                     play_url += utils.append_headers(headers)
@@ -209,48 +205,7 @@ def route(api, seek_time=0, channel_id=None, video_id=None, slug=None, ask=False
                     except AttributeError:
                         pass
                 if 'Adaptive' in quality_label and use_ia:
-                    inputstream_property = 'inputstream'
-                    kodi_version = kodi.get_kodi_version()
-                    if kodi_version.major < 19:
-                        inputstream_property += 'addon'
-                    playback_item.setProperty(inputstream_property, 'inputstream.adaptive')
-                    # manifest_type is deprecated on Kodi 21+ (auto-detected)
-                    if kodi_version.major < 21:
-                        playback_item.setProperty('inputstream.adaptive.manifest_type', 'hls')
-                    
-                    # Use 'fixed-res' mode to select the highest quality stream from the start
-                    # and keep it fixed without adaptive bandwidth-based switching.
-                    # 
-                    # This ensures:
-                    # - HEVC 1440p+ streams are selected when available (with correct audio)
-                    # - H.264 1080p streams are selected at full quality (not downgraded to 720p)
-                    # - No mid-stream quality switching that could cause audio desync
-                    playback_item.setProperty('inputstream.adaptive.stream_selection_type', 'fixed-res')
-                    
-                    # Set maximum resolution to 4K to allow all available qualities
-                    # Valid values: 480p, 640p, 720p, 1080p, 2K, 1440p, 4K
-                    playback_item.setProperty('inputstream.adaptive.chooser_resolution_max', '4K')
-                    
-                    # IMPORTANT: Ignore display resolution to allow 4K/8K streams on any display
-                    playback_item.setProperty('inputstream.adaptive.ignore_display_resolution', 'true')
-                    
-                    # Prefer HEVC codec over H.264 when both are available
-                    # Order: HEVC variants > AV1 > H.264 > Audio
-                    playback_item.setProperty('inputstream.adaptive.preferred_codecs', 'hev1,hvc1,av1,avc1,mp4a')
-                    
-                    # Configure proxy for inputstream.adaptive
-                    from urllib.parse import urlparse
-                    proxy_dict = utils.get_proxy_dict()
-                    if proxy_dict:
-                        proxy_url = proxy_dict['http']
-                        parsed = urlparse(proxy_url)
-                        playback_item.setProperty('inputstream.adaptive.proxy_host', parsed.hostname)
-                        playback_item.setProperty('inputstream.adaptive.proxy_port', str(parsed.port or 8080))
-                        if parsed.username and parsed.password:
-                            playback_item.setProperty('inputstream.adaptive.proxy_username', parsed.username)
-                            playback_item.setProperty('inputstream.adaptive.proxy_password', parsed.password)
-                        log_utils.log('Configured inputstream.adaptive proxy: {}:{}'.format(
-                            parsed.hostname, parsed.port or 8080), log_utils.LOGINFO)
+                    utils.set_inputstream_adaptive_properties(playback_item)
                 else:
                     # Configure proxy for regular video player (non-adaptive)
                     proxy_dict = utils.get_proxy_dict()
@@ -264,7 +219,12 @@ def route(api, seek_time=0, channel_id=None, video_id=None, slug=None, ask=False
                     _set_seek_time(seek_time)
                 _set_playing()
                 
-                # Save to watch history
+                if use_player:
+                    kodi.Player().play(item_dict['path'], playback_item)
+                else:
+                    kodi.set_resolved_url(playback_item)
+
+                # Save to watch history after Kodi accepts the playback handoff.
                 try:
                     watch_history = get_watch_history()
                     if utils.get_watch_history_size() > 0:
@@ -303,11 +263,7 @@ def route(api, seek_time=0, channel_id=None, video_id=None, slug=None, ask=False
                             )
                 except Exception as e:
                     log_utils.log('Failed to save watch history: %s' % str(e), log_utils.LOGWARNING)
-                
-                if use_player:
-                    kodi.Player().play(item_dict['path'], playback_item)
-                else:
-                    kodi.set_resolved_url(playback_item)
+
                 if (not slug and not video_id) and (name is not None):
                     if utils.irc_enabled() and api.access_token:
                         username = api.get_username()

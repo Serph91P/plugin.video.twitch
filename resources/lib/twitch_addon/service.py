@@ -136,7 +136,7 @@ class LiveNotificationsThread(threading.Thread):
         user_id = twitch_api.get_user_id()
 
         all_followed = {Keys.STREAMS: []}
-        followed_ids = []
+        processed_ids = set()
         cursor = 'MA=='
         next_page = True
         while next_page:
@@ -144,20 +144,37 @@ class LiveNotificationsThread(threading.Thread):
                 return None
 
             streams = twitch_api.get_followed_streams(user_id=user_id, first=100, after=cursor)
+            if monitor.waitForAbort(0):
+                return None
             next_page = False
             if Keys.DATA in streams:
+                followed_ids = []
+                page_streams = {}
                 for follow in streams[Keys.DATA]:
-                    if follow.get(Keys.USER_ID):
-                        followed_ids.append(follow[Keys.USER_ID])
+                    followed_id = follow.get(Keys.USER_ID)
+                    if followed_id and followed_id not in processed_ids:
+                        processed_ids.add(followed_id)
+                        followed_ids.append(followed_id)
+                        page_streams[followed_id] = follow
 
-                channels = twitch_api.get_users(followed_ids)
-                if Keys.DATA in channels:
-                    for channel in channels[Keys.DATA]:
+                if followed_ids:
+                    channels = twitch_api.get_users(followed_ids)
+                    if monitor.waitForAbort(0):
+                        return None
+                    channel_data = channels.get(Keys.DATA, []) if isinstance(channels, dict) else []
+                    if not isinstance(channel_data, list):
+                        channel_data = []
+                    channels_by_id = {
+                        channel.get(Keys.ID): channel
+                        for channel in channel_data
+                        if channel.get(Keys.ID) in page_streams
+                    }
+                    for followed_id in followed_ids:
+                        channel = channels_by_id.get(followed_id)
+                        if not channel:
+                            continue
                         channel[Keys.STREAMS] = {}
-                        for follow in streams[Keys.DATA]:
-                            if channel.get(Keys.ID) == follow.get(Keys.USER_ID):
-                                channel[Keys.STREAM] = follow
-                                break
+                        channel[Keys.STREAM] = page_streams[followed_id]
                         all_followed[Keys.STREAMS].append(channel)
 
                 if len(streams[Keys.DATA]) > 0:
@@ -168,9 +185,14 @@ class LiveNotificationsThread(threading.Thread):
         colorized = []
 
         for stream in all_followed[Keys.STREAMS]:
-            if not self.logos.get(stream[Keys.ID]):
-                self.logos[stream[Keys.ID]] = stream[Keys.PROFILE_IMAGE_URL]
-            if stream[Keys.STREAM].get(Keys.TYPE) != 'live':
+            stream_id = stream.get(Keys.ID)
+            profile_image = stream.get(Keys.PROFILE_IMAGE_URL)
+            followed_stream = stream.get(Keys.STREAM)
+            if not stream_id or not followed_stream:
+                continue
+            if profile_image and not self.logos.get(stream_id):
+                self.logos[stream_id] = profile_image
+            if followed_stream.get(Keys.TYPE) != 'live':
                 color = get_vodcast_color()
                 if stream.get(Keys.DISPLAY_NAME):
                     stream[Keys.DISPLAY_NAME] = u'[COLOR={color}]{name}[/COLOR]'\
@@ -179,8 +201,8 @@ class LiveNotificationsThread(threading.Thread):
                     stream[Keys.LOGIN] = u'[COLOR={color}]{name}[/COLOR]'\
                         .format(name=stream[Keys.LOGIN], color=color)
             colorized.append(stream)
-        followed_tuples = [(stream[Keys.ID], stream[Keys.LOGIN],
-                            stream[Keys.DISPLAY_NAME], stream[Keys.STREAM].get(Keys.GAME_NAME))
+        followed_tuples = [(stream[Keys.ID], stream.get(Keys.LOGIN),
+                            stream.get(Keys.DISPLAY_NAME), stream[Keys.STREAM].get(Keys.GAME_NAME))
                            for stream in colorized]
         return followed_tuples
 

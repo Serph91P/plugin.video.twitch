@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<addon id="plugin.video.twitch" version="3.1.10" name="Twitch" provider-name="Seraph91P">
+<addon id="plugin.video.twitch" version="3.1.11" name="Twitch" provider-name="Seraph91P">
     <requires>
         <import addon="xbmc.python" version="3.0.1"/>
         <import addon="script.module.requests" version="2.9.1"/>
@@ -15,15 +15,9 @@
             <fanart>resources/media/fanart.jpg</fanart>
         </assets>
         <news>
-[fix] Adaptive quality prefers HEVC variants when website token unlocks them
-[fix] Let Kodi/InputStream choose Twitch audio track instead of forcing track 1
-[add] HEVC/1440p quality preference using codec metadata
-[fix] Notifications category label showed "Enabled" instead of "Notifications"
-[fix] Login page: Connect/Disconnect buttons now toggle based on auth state
-[fix] Login page: hidden token fields no longer create empty UI sections
-[fix] Proxy settings had hardcoded English labels instead of localizable string IDs
-[fix] Revoke Token only visible when authenticated
-[upd] Localized proxy setting labels (EN + DE)
+[fix] Harden playback, search, cache, history, settings, OAuth, and notification behavior
+[upd] Add deterministic runtime-only packaging and immutable release validation
+[upd] Validate repository source publication notifications
         </news>
         <platform>all</platform>
         <source>https://github.com/Serph91P/plugin.video.twitch</source>

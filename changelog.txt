@@ -1,3 +1,8 @@
+3.1.11
+[fix] Harden playback, search, cache, history, settings, OAuth, and notification behavior
+[upd] Add deterministic runtime-only packaging and immutable release validation
+[upd] Validate repository source publication notifications
+
 3.1.5
 [fix] Token refresh now sends Client Secret (required by Twitch API) - fixes re-auth every 4 hours
 [add] New Client Secret setting in addon settings (Login > OAuth Authentication)

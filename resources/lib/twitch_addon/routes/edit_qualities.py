@@ -41,5 +41,5 @@ def route(api, content_type, target_id=None, name=None, video_id=None, remove=Fa
     else:
         result = utils.remove_default_quality(content_type)
         if result:
-            name = result[result.keys()[0]]['name']
+            name = result[next(iter(result))]['name']
             kodi.notify(msg=i18n('removed_default_quality') % (content_type, name), sound=False)

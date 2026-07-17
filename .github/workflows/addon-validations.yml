@@ -8,27 +8,264 @@ on:
     branches: [main, develop]
 
 jobs:
-  addon-validations:
-    name: Add-on Validations
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12', '3.13']
 
     steps:
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Checkout Add-on
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyyaml coverage
+
+      - name: Run tests
+        run: |
+          python -m unittest discover -v
+
+      - name: Branch coverage gate
+        run: |
+          python -c "
+          from tools.coverage_gate import measure_branch_coverage
+          result = measure_branch_coverage()
+          if result.get('error'):
+              print(f'COVERAGE GATE ERROR: {result[\"error\"]}')
+              exit(1)
+          if result.get('modules_missing'):
+              print('CRITICAL MODULES ABSENT FROM COVERAGE REPORT:')
+              for m in result['modules_missing']:
+                  print(f'  - {m}')
+              exit(1)
+          print(f'Branch coverage: {result[\"branch_coverage\"]}%')
+          print(f'Threshold: {result[\"threshold\"]}%')
+          if not result['passed']:
+              print('COVERAGE GATE FAILED: below threshold')
+              exit(1)
+          print('Coverage gate passed')
+          "
+
+  package:
+    name: Package Validation
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout Add-on
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyyaml
+
+      - name: Build and validate package
+        id: build
+        run: |
+          python -c "
+          from tools.build_package import build_package, validate_package, verify_checksum
+          from pathlib import Path
+          import json, sys
+          info = build_package('.', 'dist/addon.zip')
+          output = Path('dist') / info['filename']
+          Path('dist/addon.zip').rename(output)
+          errors = validate_package(str(output), '.')
+          if errors:
+              print('VALIDATION ERRORS:')
+              for e in errors:
+                  print(f'  - {e}')
+              sys.exit(1)
+          ok, checksum = verify_checksum(str(output), info['checksum'])
+          if not ok:
+              print('CHECKSUM MISMATCH')
+              sys.exit(1)
+          with open('$GITHUB_OUTPUT', 'a') as f:
+              f.write(f'filename={info[\"filename\"]}\n')
+              f.write(f'checksum={checksum}\n')
+              f.write(f'addon_id={info[\"addon_id\"]}\n')
+              f.write(f'addon_version={info[\"addon_version\"]}\n')
+          print(json.dumps(info, indent=2))
+          "
+
+      - name: Write validation evidence
+        id: evidence
+        run: |
+          python -c "
+          import json, os
+          from pathlib import Path
+          from tools.validate_release import write_validation_evidence
+          evidence = {
+              'candidate_sha': os.environ['GITHUB_SHA'],
+              'validation_run_id': os.environ['GITHUB_RUN_ID'],
+              'validation_head_sha': os.environ['GITHUB_SHA'],
+              'addon_id': '${{ steps.build.outputs.addon_id }}',
+              'addon_version': '${{ steps.build.outputs.addon_version }}',
+              'asset_name': '${{ steps.build.outputs.filename }}',
+              'artifact_sha256': '${{ steps.build.outputs.checksum }}',
+              'tag': '',
+              'publication_id': '${{ steps.build.outputs.addon_id }}@${{ steps.build.outputs.addon_version }}',
+          }
+          evidence_path = Path('dist/validation-evidence.json')
+          write_validation_evidence(evidence_path, evidence)
+          print(json.dumps(evidence, indent=2))
+          "
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: addon-package
+          path: dist/${{ steps.build.outputs.filename }}
+
+      - name: Upload validation evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-evidence
+          path: dist/validation-evidence.json
+
+  kodi-check:
+    name: Kodi Checker (${{ matrix.branch }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        branch: [omega, nexus]
+
+    steps:
+      - name: Download package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: addon-package
+          path: dist
+
+      - name: Extract runtime package
+        run: |
+          unzip dist/*.zip -d .
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      - name: Checkout Add-on
-        uses: actions/checkout@v4
-        with:
-          path: ${{ github.event.repository.name }}
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install git+https://github.com/xbmc/addon-check.git
 
-      - name: Kodi Add-on Checker (Omega)
-        id: kodi-addon-checker
+      - name: Kodi Add-on Checker (${{ matrix.branch }})
         run: |
-          kodi-addon-checker ${{ github.event.repository.name }} --branch=omega --skip-dependency-checks
+          kodi-addon-checker plugin.video.twitch --branch=${{ matrix.branch }} --skip-dependency-checks
+
+  workflow-validation:
+    name: Workflow Validation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Add-on
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyyaml
+
+      - name: Validate workflow YAML
+        run: |
+          python -c "
+          from tools.validate_workflows import validate_all_workflows
+          parsed, errors = validate_all_workflows()
+          if errors:
+              print('WORKFLOW VALIDATION ERRORS:')
+              for e in errors:
+                  print(f'  - {e}')
+              exit(1)
+          print(f'Validated {len(parsed)} workflow(s) successfully')
+          for name in sorted(parsed):
+              print(f'  {name}')
+          "
+
+  security-scan:
+    name: Security and Quality Scans
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Add-on
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyyaml
+
+      - name: Conflict marker scan
+        run: |
+          if grep -rPn '^<<<<<<<|^=======|^>>>>>>>' --include='*.py' --include='*.yml' --include='*.xml' --exclude-dir='.venv' --exclude-dir='.git' --exclude-dir='__pycache__' .; then
+            echo "CONFLICT MARKERS FOUND"
+            exit 1
+          fi
+          echo "No conflict markers found"
+
+      - name: Secret pattern scan
+        run: |
+          python -c "
+          import re, os, sys
+          patterns = [
+              re.compile(r'(?i)(password|secret|api[_-]?key)\s*[=:]\s*[\"\\'][a-zA-Z0-9+/=_-]{8,128}[\"\\']'),
+          ]
+          found = []
+          for root, dirs, files in os.walk('.'):
+              dirs[:] = [d for d in dirs if d not in ('.git', '__pycache__', '.venv')]
+              for f in files:
+                  if f.endswith(('.py', '.yml', '.yaml', '.xml', '.json', '.cfg', '.ini')):
+                      path = os.path.join(root, f)
+                      try:
+                          text = open(path, encoding='utf-8', errors='ignore').read()
+                      except Exception:
+                          continue
+                      for line_no, line in enumerate(text.splitlines(), 1):
+                          for pat in patterns:
+                              if pat.search(line):
+                                  # redact the value
+                                  redacted = pat.sub(lambda m: m.group(0).split('=')[0].split(':')[0] + '=***', line)
+                                  found.append(f'{path}:{line_no}: {redacted.strip()}')
+          if found:
+              print('POTENTIAL SECRETS FOUND:')
+              for f in found:
+                  print(f'  {f}')
+              sys.exit(1)
+          print('No secret patterns found')
+          "
+
+      - name: Unicode dash scan
+        run: |
+          if grep -rP '[\x{2013}\x{2014}]' --include='*.py' --include='*.yml' --include='*.yaml' --include='*.xml' --exclude-dir='.venv' --exclude-dir='.git' --exclude-dir='__pycache__' .; then
+            echo "UNICODE DASHES FOUND (U+2013/U+2014)"
+            exit 1
+          fi
+          echo "No unicode dashes found"

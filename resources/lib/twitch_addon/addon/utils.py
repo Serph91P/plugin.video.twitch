@@ -14,7 +14,7 @@ import time
 
 from base64 import b64decode
 from datetime import datetime
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 
 from .common import kodi, json_store
 from .strings import STRINGS
@@ -127,6 +127,45 @@ def append_headers(headers):
     if header_parts:
         return '|%s' % '&'.join(header_parts)
     return ''
+
+
+def set_inputstream_adaptive_properties(playback_item):
+    inputstream_property = 'inputstream'
+    kodi_version = kodi.get_kodi_version()
+    if kodi_version.major < 19:
+        inputstream_property += 'addon'
+    playback_item.setProperty(inputstream_property, 'inputstream.adaptive')
+    if kodi_version.major < 21:
+        playback_item.setProperty('inputstream.adaptive.manifest_type', 'hls')
+
+    playback_item.setProperty('inputstream.adaptive.stream_selection_type', 'fixed-res')
+    playback_item.setProperty('inputstream.adaptive.chooser_resolution_max', '4K')
+    playback_item.setProperty('inputstream.adaptive.ignore_display_resolution', 'true')
+    playback_item.setProperty(
+        'inputstream.adaptive.preferred_codecs', 'hev1,hvc1,av1,avc1,mp4a'
+    )
+
+    proxy_dict = get_proxy_dict()
+    if proxy_dict:
+        parsed = urlparse(proxy_dict['http'])
+        playback_item.setProperty('inputstream.adaptive.proxy_host', parsed.hostname)
+        playback_item.setProperty(
+            'inputstream.adaptive.proxy_port', str(parsed.port or 8080)
+        )
+        if parsed.username and parsed.password:
+            playback_item.setProperty(
+                'inputstream.adaptive.proxy_username', parsed.username
+            )
+            playback_item.setProperty(
+                'inputstream.adaptive.proxy_password', parsed.password
+            )
+        from .common import log_utils
+        log_utils.log(
+            'Configured inputstream.adaptive proxy: {}:{}'.format(
+                parsed.hostname, parsed.port or 8080
+            ),
+            log_utils.LOGINFO,
+        )
 
 
 def get_redirect_uri():
@@ -365,8 +404,17 @@ def get_thumbnail_size():
 
 
 def get_vodcast_color():
-    color = int(kodi.get_setting('vodcast_highlight'))
-    color = COLORS.split('|')[color]
+    colors = COLORS.split('|')
+    color = kodi.get_setting('vodcast_highlight')
+    if isinstance(color, bool):
+        color = 'red'
+    elif color not in colors:
+        try:
+            color_index = int(color)
+        except (TypeError, ValueError):
+            color = 'red'
+        else:
+            color = colors[color_index] if 0 <= color_index < len(colors) else 'red'
     return kodi.decode_utf8(color)
 
 
@@ -621,14 +669,33 @@ def add_default_quality(content_type, target_id, name, quality):
 
 def remove_default_quality(content_type):
     json_data = get_stored_json()
-    result = kodi.Dialog().select(i18n('remove_default_quality') % content_type,
-                                  ['%s [%s]' % (user[user.keys()[0]]['name'], user[user.keys()[0]]['quality']) for user in json_data['qualities'][content_type]])
-    if result == -1:
+    qualities = json_data.get('qualities')
+    if not isinstance(qualities, dict):
         return None
-    else:
-        result = json_data['qualities'][content_type].pop(result)
-        storage.save(json_data)
-        return result
+    stored = qualities.get(content_type)
+    if not isinstance(stored, list):
+        return None
+
+    choices = []
+    indexes = []
+    for index, user in enumerate(stored):
+        if not isinstance(user, dict) or not user:
+            continue
+        user_id = next(iter(user))
+        quality = user[user_id]
+        if not isinstance(quality, dict) or 'name' not in quality or 'quality' not in quality:
+            continue
+        indexes.append(index)
+        choices.append('%s [%s]' % (quality['name'], quality['quality']))
+    if not choices:
+        return None
+
+    result = kodi.Dialog().select(i18n('remove_default_quality') % content_type, choices)
+    if result < 0 or result >= len(indexes):
+        return None
+    result = stored.pop(indexes[result])
+    storage.save(json_data)
+    return result
 
 
 def clear_list(list_type, list_name):

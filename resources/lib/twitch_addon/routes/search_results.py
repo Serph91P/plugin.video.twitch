@@ -102,16 +102,17 @@ def route(api, content, query, after='MA='):
             cursor = games.get('pagination', {}).get('cursor')
             if cursor:
                 kodi.create_item(utils.link_to_next_page({
-                    'mode': MODES.GAMES,
+                    'mode': MODES.SEARCHRESULTS,
+                    'content': content,
+                    'query': query,
                     'after': cursor
                 }))
-
-            kodi.end_of_directory()
         else:
             kodi.create_item({'path': kodi.get_plugin_url({'mode': MODES.REFRESH}),
                               'label': i18n('refresh'),
                               'is_folder': False,
                               'is_playable': False})
+        kodi.end_of_directory()
     elif content == 'id_url':
         kodi.set_view('videos', set_sort=True)
         all_items = []
@@ -122,7 +123,7 @@ def route(api, content, query, after='MA='):
         except TwitchException:
             results = None
 
-        if Keys.DATA in results:
+        if isinstance(results, dict) and isinstance(results.get(Keys.DATA), list):
             for video in results[Keys.DATA]:
                 all_items.append(video)
 

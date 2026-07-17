@@ -4,7 +4,12 @@ Verifies that the release workflow has correct working directories,
 path handling, SHA validation, and immutable release contract.
 """
 
+import json
+import os
+import re
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -22,6 +27,114 @@ try:
     _HAS_YAML = True
 except ImportError:
     _HAS_YAML = False
+
+
+# --- Embedded Node.js harness for find-run behavioral tests ---
+
+_FIND_RUN_HARNESS = """
+let inputData = "";
+process.stdin.on("data", function(chunk) { inputData += chunk; });
+process.stdin.on("end", function() {
+  var scenario = JSON.parse(inputData);
+  var script = scenario.script;
+  var ctx = scenario.context;
+  var apiLog = [];
+  var responses = scenario.apiCalls || {};
+  var github = {
+    rest: {
+      actions: {
+        listWorkflowRunsForRepo: async function(params) {
+          apiLog.push({ method: "listWorkflowRunsForRepo", params: Object.assign({}, params) });
+          var key = params.branch + "|" + (params.page || "");
+          if (responses[key]) {
+            return responses[key];
+          }
+          return { data: { workflow_runs: [] } };
+        }
+      }
+    }
+  };
+  var context = {
+    repo: { owner: ctx.owner || "test-owner", repo: ctx.repo || "test-repo" },
+    ref: ctx.ref || "refs/tags/v1.0.0",
+    sha: ctx.sha || "abc123"
+  };
+  var outputs = {};
+  var core = {
+    setOutput: function(name, value) { outputs[name] = value; },
+    setFailed: function(message) { outputs.__failed = true; outputs.__failureMessage = message; }
+  };
+  var fs = require("fs");
+  var osMod = require("os");
+  var pathMod = require("path");
+  var tmpFile = pathMod.join(osMod.tmpdir(), "find_run_test_" + process.pid + ".mjs");
+  var wrapped = "export async function run(github, context, core) { " + script + " }";
+  fs.writeFileSync(tmpFile, wrapped);
+  (async function() {
+    try {
+      var mod = await import(tmpFile);
+      await mod.run(github, context, core);
+    } catch(err) {
+      outputs.__error = err.message;
+    } finally {
+      try { fs.unlinkSync(tmpFile); } catch(e) {}
+    }
+    var result = {
+      outputs: outputs,
+      failed: !!outputs.__failed,
+      failureMessage: outputs.__failureMessage || null,
+      error: outputs.__error || null,
+      apiLog: apiLog
+    };
+    process.stdout.write(JSON.stringify(result, null, 2) + "\\n");
+  })();
+});
+"""
+
+
+def _extract_find_run_script():
+    data = parse_yaml_file(ROOT / ".github" / "workflows" / "make-release.yml")
+    for step in data["jobs"]["release"]["steps"]:
+        if step.get("id") == "find-run":
+            return step["with"]["script"]
+    raise RuntimeError("find-run step not found in make-release.yml")
+
+
+def _run_find_run_harness(scenario):
+    proc = subprocess.run(
+        ["node", "-e", _FIND_RUN_HARNESS],
+        input=json.dumps(scenario),
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"harness exited {proc.returncode}: {proc.stderr}")
+    return json.loads(proc.stdout)
+
+
+def _make_find_scenario(*, sha="abc123def456", ref="refs/tags/v1.0.0",
+                        owner="test-owner", repo="test-repo",
+                        tag_runs=None, branch_pages=None):
+    tag_branch = ref.replace("refs/tags/", "")
+    api_calls = {tag_branch + "|": {"data": {"workflow_runs": tag_runs or []}}}
+    if branch_pages:
+        for branch, pages in branch_pages.items():
+            for page_num, runs in pages.items():
+                api_calls[branch + "|" + str(page_num)] = {"data": {"workflow_runs": runs}}
+    return {
+        "script": _extract_find_run_script(),
+        "context": {"owner": owner, "repo": repo, "ref": ref, "sha": sha},
+        "apiCalls": api_calls,
+    }
+
+
+def _make_find_run(*, run_id=1, name="Add-on Validations", conclusion="success",
+                   head_sha="abc123def456", head_branch="main"):
+    return {
+        "id": run_id, "name": name, "conclusion": conclusion,
+        "head_sha": head_sha, "head_branch": head_branch,
+    }
 
 
 @unittest.skipUnless(_HAS_YAML, 'pyyaml not installed')
@@ -259,38 +372,170 @@ class MakeReleaseImmutableContractTests(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAS_YAML, 'pyyaml not installed')
-class MakeReleaseValidationBranchSearchTests(unittest.TestCase):
-    """Tests that the find-run step searches all branches eligible for validation."""
+class MakeReleaseFindRunBehaviorTests(unittest.TestCase):
+    """Execute the real find-run JavaScript and verify selection behavior."""
 
-    def setUp(self):
-        self.release_data = parse_yaml_file(
-            ROOT / '.github' / 'workflows' / 'make-release.yml'
+    def test_page2_match_after_nonmatches(self):
+        sha = "deadbeef1234"
+        good = _make_find_run(run_id=42, head_sha=sha, head_branch="main")
+        bad = [_make_find_run(run_id=i, name="Other", head_branch="main") for i in range(10)]
+        scenario = _make_find_scenario(
+            sha=sha, tag_runs=[],
+            branch_pages={"main": {1: bad, 2: [good]}},
         )
-        self.validations_data = parse_yaml_file(
-            ROOT / '.github' / 'workflows' / 'addon-validations.yml'
+        result = _run_find_run_harness(scenario)
+        self.assertFalse(result["failed"], result.get("failureMessage"))
+        self.assertEqual(result["outputs"]["validation_run_id"], 42)
+
+    def test_rejection_matrix(self):
+        sha = "abc123"
+        cases = {
+            "wrong_workflow_name": dict(
+                tag_runs=[_make_find_run(run_id=1, name="Wrong Workflow", head_sha=sha)],
+            ),
+            "wrong_sha": dict(
+                tag_runs=[_make_find_run(run_id=1, head_sha="wrongsha")],
+            ),
+            "stale_sha": dict(
+                branch_pages={"main": {1: [_make_find_run(run_id=1, head_sha="old")]}},
+            ),
+            "wrong_workflow_eligible": dict(
+                branch_pages={"main": {1: [_make_find_run(run_id=1, name="CI Tests", head_sha=sha)]}},
+            ),
+            "wrong_commit": dict(
+                branch_pages={"main": {1: [_make_find_run(run_id=1, head_sha="other")]}},
+            ),
+            "unsuccessful": dict(
+                branch_pages={"main": {1: [_make_find_run(run_id=1, conclusion="failure", head_sha=sha)]}},
+            ),
+            "absent": dict(
+                tag_runs=[],
+            ),
+            "malformed": dict(
+                branch_pages={"main": {1: [{"id": 1}]}},
+            ),
+        }
+        for label, kwargs in cases.items():
+            with self.subTest(case=label):
+                result = _run_find_run_harness(_make_find_scenario(sha=sha, **kwargs))
+                self.assertTrue(result["failed"], f"{label} should be rejected")
+
+    def test_unsuccessful_conclusions_rejected(self):
+        sha = "abc123"
+        for conclusion in ("failure", "cancelled", "timed_out", "action_required"):
+            with self.subTest(conclusion=conclusion):
+                scenario = _make_find_scenario(
+                    sha=sha,
+                    tag_runs=[_make_find_run(run_id=1, conclusion=conclusion, head_sha=sha)],
+                )
+                result = _run_find_run_harness(scenario)
+                self.assertTrue(result["failed"], f"reject conclusion={conclusion}")
+
+    def test_wrong_branch_rejected(self):
+        sha = "abc123"
+        scenario = _make_find_scenario(
+            ref="refs/tags/v1.0.0", sha=sha,
+            tag_runs=[_make_find_run(run_id=100, head_sha=sha, head_branch="fix/some-feature")],
         )
-        self.release_job = self.release_data['jobs']['release']
+        result = _run_find_run_harness(scenario)
+        self.assertTrue(result["failed"], "must not select non-eligible branch")
+        self.assertIn("No successful validation run", result["failureMessage"])
 
-    def _find_run_script(self):
-        for step in self.release_job['steps']:
-            if step.get('id') == 'find-run':
-                return step.get('with', {}).get('script', '')
-        self.fail('no find-run step found')
+    def test_eligible_branch_wins_over_tag(self):
+        sha = "abc123"
+        scenario = _make_find_scenario(
+            ref="refs/tags/v1.0.0", sha=sha,
+            tag_runs=[_make_find_run(run_id=100, head_sha=sha, head_branch="fix/some-feature")],
+            branch_pages={"main": {1: [_make_find_run(run_id=200, head_sha=sha, head_branch="main")]}},
+        )
+        result = _run_find_run_harness(scenario)
+        self.assertFalse(result["failed"], result.get("failureMessage"))
+        self.assertEqual(result["outputs"]["validation_run_id"], 200)
 
-    def _validation_push_branches(self):
-        on_block = self.validations_data.get('on', self.validations_data.get(True, {}))
-        return set(on_block.get('push', {}).get('branches', []))
+    def test_pagination_bounds(self):
+        sha = "abc123"
+        pages = {i: [_make_find_run(run_id=(i-1)*10+j, head_branch="main") for j in range(10)] for i in range(1, 6)}
+        scenario = _make_find_scenario(sha=sha, branch_pages={"main": pages})
+        result = _run_find_run_harness(scenario)
+        main_calls = [c for c in result["apiLog"] if c["params"].get("branch") == "main"]
+        self.assertLessEqual(len(main_calls), 5, "must not exceed maxPages")
+        self.assertTrue(result["failed"], "no match within bounds should fail")
 
-    def test_find_run_searches_all_validation_eligible_branches(self):
-        """The find-run step must search every branch that addon-validations pushes to."""
-        eligible = self._validation_push_branches()
-        script = self._find_run_script()
-        for branch in eligible:
-            self.assertIn(
-                f"'{branch}'",
-                script,
-                f"find-run script must reference branch '{branch}' from validation triggers",
-            )
+    def test_over_limit_match_not_selected(self):
+        sha = "abc123"
+        match = _make_find_run(run_id=999, head_sha=sha, head_branch="main")
+        scenario = _make_find_scenario(
+            sha=sha,
+            branch_pages={"main": {6: [match]}},
+        )
+        result = _run_find_run_harness(scenario)
+        self.assertTrue(result["failed"], "over-limit match must not be selected")
+        main_calls = [c for c in result["apiLog"] if c["params"].get("branch") == "main"]
+        self.assertLessEqual(len(main_calls), 5, "must not query beyond maxPages")
+        for c in main_calls:
+            self.assertLessEqual(c["params"].get("page", 1), 5,
+                                 "page number must not exceed maxPages")
+
+    def test_both_branches_searched(self):
+        sha = "abc123"
+        good = _make_find_run(run_id=50, head_sha=sha, head_branch="develop")
+        scenario = _make_find_scenario(
+            sha=sha, branch_pages={"main": {1: []}, "develop": {1: [good]}},
+        )
+        result = _run_find_run_harness(scenario)
+        self.assertFalse(result["failed"], result.get("failureMessage"))
+        self.assertEqual(result["outputs"]["validation_run_id"], 50)
+        branch_calls = [
+            c["params"]["branch"] for c in result["apiLog"]
+            if c["params"].get("branch") in ("main", "develop")
+        ]
+        self.assertIn("main", branch_calls, "main must be queried")
+        self.assertIn("develop", branch_calls, "develop must be queried")
+        self.assertLess(
+            branch_calls.index("main"),
+            branch_calls.index("develop"),
+            "main must be queried before develop",
+        )
+
+    def test_main_before_develop(self):
+        sha = "abc123"
+        scenario = _make_find_scenario(sha=sha, branch_pages={"main": {1: []}, "develop": {1: []}})
+        result = _run_find_run_harness(scenario)
+        branch_order = [c["params"]["branch"] for c in result["apiLog"] if c["params"].get("branch") in ("main", "develop")]
+        if len(branch_order) >= 2:
+            self.assertEqual(branch_order[0], "main")
+
+    def test_tag_query_eligible_branch_accepted(self):
+        sha = "abc123"
+        scenario = _make_find_scenario(
+            ref="refs/tags/v1.0.0", sha=sha,
+            tag_runs=[_make_find_run(run_id=99, head_sha=sha, head_branch="main")],
+        )
+        result = _run_find_run_harness(scenario)
+        self.assertFalse(result["failed"], result.get("failureMessage"))
+        self.assertEqual(result["outputs"]["validation_run_id"], 99)
+
+
+@unittest.skipUnless(_HAS_YAML, 'pyyaml not installed')
+class MakeReleaseFindRunStaticTests(unittest.TestCase):
+    """Static structural checks on the find-run script."""
+
+    def test_script_structure(self):
+        script = _extract_find_run_script()
+        checks = [
+            ("eligibleBranches", "must define eligibleBranches"),
+            ("'main'", "must reference main branch"),
+            ("'develop'", "must reference develop branch"),
+            ("perPage", "must define perPage"),
+            ("conclusion", "must check conclusion"),
+            ("head_sha", "must check head_sha"),
+            ("Add-on Validations", "must check workflow name"),
+            ("eligibleBranches.includes(run.head_branch)", "must verify head_branch eligibility"),
+        ]
+        for pattern, msg in checks:
+            with self.subTest(pattern=pattern):
+                self.assertIn(pattern, script, msg)
+        self.assertTrue(re.search(r"maxPages?\b", script), "must define a maxPages bound")
 
 
 if __name__ == '__main__':

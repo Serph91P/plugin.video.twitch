@@ -92,17 +92,25 @@ jobs:
               branch: context.ref.replace('refs/tags/', ''),
               per_page: 5,
             });
-            // Also search eligible validation branches for completed runs
+            // Search eligible validation branches with bounded pagination
             const eligibleBranches = ['main', 'develop'];
+            const perPage = 10;
+            const maxPages = 5;
             const eligibleRuns = [];
             for (const b of eligibleBranches) {
-              const resp = await github.rest.actions.listWorkflowRunsForRepo({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                branch: b,
-                per_page: 10,
-              });
-              eligibleRuns.push(...resp.data.workflow_runs);
+              for (let page = 1; page <= maxPages; page++) {
+                const resp = await github.rest.actions.listWorkflowRunsForRepo({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  branch: b,
+                  per_page: perPage,
+                  page: page,
+                });
+                const batch = resp.data.workflow_runs;
+                if (!batch || batch.length === 0) break;
+                eligibleRuns.push(...batch);
+                if (batch.length < perPage) break;
+              }
             }
             const allRuns = [...runs.data.workflow_runs, ...eligibleRuns];
             let found = null;
@@ -111,6 +119,7 @@ jobs:
                 run.name === 'Add-on Validations'
                 && run.conclusion === 'success'
                 && run.head_sha === context.sha
+                && eligibleBranches.includes(run.head_branch)
               ) {
                 found = run;
                 break;

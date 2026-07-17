@@ -4,7 +4,9 @@ Verifies that all workflow files parse correctly with a real YAML
 parser and have the expected structural elements.
 """
 
+import re
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -14,6 +16,7 @@ sys.path.insert(0, str(ROOT))
 try:
     from tools.validate_workflows import (
         validate_all_workflows,
+        validate_workflow_policy,
         validate_workflow_structure,
         parse_yaml_file,
     )
@@ -53,6 +56,274 @@ class WorkflowParsingTests(unittest.TestCase):
     def test_notify_repository_exists(self):
         path = ROOT / '.github' / 'workflows' / 'notify-repository.yml'
         self.assertTrue(path.exists())
+
+    def test_action_pins_have_readable_version_comments(self):
+        pattern = re.compile(
+            r'^\s*uses:\s+\S+@[0-9a-f]{40}\s+# v\d+(?:\.\d+)*\s*$'
+        )
+        workflows_dir = ROOT / '.github' / 'workflows'
+        paths = list(workflows_dir.glob('*.yml'))
+        paths.extend(workflows_dir.glob('*.yaml'))
+        for path in paths:
+            for line_number, line in enumerate(path.read_text().splitlines(), 1):
+                if 'uses:' in line:
+                    self.assertRegex(
+                        line, pattern,
+                        f'{path.name}:{line_number} action pin needs a '
+                        'version comment',
+                    )
+
+
+@unittest.skipUnless(_HAS_YAML, 'pyyaml not installed')
+class WorkflowPolicyTests(unittest.TestCase):
+    def setUp(self):
+        self.workflow = {
+            'permissions': {'contents': 'read'},
+            'jobs': {
+                'test': {
+                    'runs-on': 'ubuntu-latest',
+                    'steps': [
+                        {
+                            'uses': 'actions/checkout@'
+                            '34e114876b0b11c390a56381ad16ebd13914f8d5',
+                        },
+                    ],
+                },
+            },
+        }
+
+    def test_accepts_pinned_action_and_reviewed_permissions(self):
+        errors = validate_workflow_policy(
+            self.workflow, 'addon-validations.yml'
+        )
+        self.assertEqual(errors, [])
+
+    def test_rejects_mutable_action_ref(self):
+        self.workflow['jobs']['test']['steps'][0]['uses'] = (
+            'actions/checkout@v4'
+        )
+        errors = validate_workflow_policy(
+            self.workflow, 'addon-validations.yml'
+        )
+        self.assertTrue(any('40-character commit SHA' in e for e in errors))
+
+    def test_rejects_short_action_sha(self):
+        self.workflow['jobs']['test']['steps'][0]['uses'] = (
+            'actions/checkout@34e1148'
+        )
+        errors = validate_workflow_policy(
+            self.workflow, 'addon-validations.yml'
+        )
+        self.assertTrue(any('40-character commit SHA' in e for e in errors))
+
+    def test_rejects_missing_top_level_permissions(self):
+        del self.workflow['permissions']
+        errors = validate_workflow_policy(
+            self.workflow, 'addon-validations.yml'
+        )
+        self.assertTrue(any('top-level permissions' in e for e in errors))
+
+    def test_rejects_overbroad_top_level_permissions(self):
+        self.workflow['permissions']['contents'] = 'write'
+        errors = validate_workflow_policy(
+            self.workflow, 'addon-validations.yml'
+        )
+        self.assertTrue(any('permissions must be exactly' in e for e in errors))
+
+    def test_rejects_overbroad_job_permission(self):
+        self.workflow['jobs']['test']['permissions'] = {'contents': 'write'}
+        errors = validate_workflow_policy(
+            self.workflow, 'addon-validations.yml'
+        )
+        self.assertTrue(any('overbroad job permissions' in e for e in errors))
+
+    def test_rejects_pip_self_upgrade(self):
+        self.workflow['jobs']['test']['steps'].append({
+            'run': 'python -m pip install --upgrade pip',
+        })
+        errors = validate_workflow_policy(
+            self.workflow, 'addon-validations.yml'
+        )
+        self.assertTrue(any('pip self-upgrade' in e for e in errors))
+
+    def test_rejects_pip_self_upgrade_command_variants(self):
+        commands = (
+            'pip install pip --upgrade',
+            'python3 -m pip install -U "pip"',
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.workflow['jobs']['test']['steps'].append({'run': command})
+                errors = validate_workflow_policy(
+                    self.workflow, 'addon-validations.yml'
+                )
+                self.assertTrue(any('pip self-upgrade' in e for e in errors))
+                self.workflow['jobs']['test']['steps'].pop()
+
+    def test_rejects_mutable_requirements_references(self):
+        commands = (
+            'python -m pip install -r requirements.txt',
+            'pip install --require-hashes '
+            '--requirement=https://example.com/requirements.txt',
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.workflow['jobs']['test']['steps'].append({'run': command})
+                errors = validate_workflow_policy(
+                    self.workflow, 'addon-validations.yml'
+                )
+                self.assertTrue(any('mutable requirements' in e for e in errors))
+                self.workflow['jobs']['test']['steps'].pop()
+
+    def test_rejects_unlocked_index_packages(self):
+        commands = (
+            'python -m pip install pyyaml',
+            'pip install "coverage==7.6.12"',
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.workflow['jobs']['test']['steps'].append({'run': command})
+                errors = validate_workflow_policy(
+                    self.workflow, 'addon-validations.yml'
+                )
+                self.assertTrue(
+                    any('hash-locked requirements' in e for e in errors)
+                )
+                self.workflow['jobs']['test']['steps'].pop()
+
+    def test_rejects_unlocked_index_package_after_environment_assignment(self):
+        self.workflow['jobs']['test']['steps'].append({
+            'run': 'FOO=bar python -m pip install pyyaml',
+        })
+        errors = validate_workflow_policy(
+            self.workflow, 'addon-validations.yml'
+        )
+        self.assertTrue(any('hash-locked requirements' in e for e in errors))
+
+    def test_rejects_unlocked_index_package_after_env_command(self):
+        self.workflow['jobs']['test']['steps'].append({
+            'run': 'env FOO=bar python -m pip install pyyaml',
+        })
+        errors = validate_workflow_policy(
+            self.workflow, 'addon-validations.yml'
+        )
+        self.assertTrue(any('hash-locked requirements' in e for e in errors))
+
+    def test_rejects_unlocked_index_package_after_shell_chain(self):
+        self.workflow['jobs']['test']['steps'].append({
+            'run': 'true && python -m pip install pyyaml',
+        })
+        errors = validate_workflow_policy(
+            self.workflow, 'addon-validations.yml'
+        )
+        self.assertTrue(any('hash-locked requirements' in e for e in errors))
+
+    def test_rejects_mutable_requirements_after_line_continuation(self):
+        self.workflow['jobs']['test']['steps'].append({
+            'run': 'python -m pip install --require-hashes \\\n'
+            '-r requirements.txt',
+        })
+        errors = validate_workflow_policy(
+            self.workflow, 'addon-validations.yml'
+        )
+        self.assertTrue(any('mutable requirements' in e for e in errors))
+
+    def test_rejects_unpinned_vcs_installs(self):
+        commands = (
+            'python -m pip install '
+            'git+https://github.com/xbmc/addon-check.git',
+            'pip install git+https://github.com/xbmc/addon-check.git@34e1148',
+            'pip install hg+https://example.com/project',
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.workflow['jobs']['test']['steps'].append({'run': command})
+                errors = validate_workflow_policy(
+                    self.workflow, 'addon-validations.yml'
+                )
+                self.assertTrue(
+                    any('full 40-character commit SHA' in e for e in errors)
+                )
+                self.workflow['jobs']['test']['steps'].pop()
+
+    def test_rejects_vcs_dependency_resolution(self):
+        self.workflow['jobs']['test']['steps'].append({
+            'run': 'python -m pip install '
+            'git+https://github.com/xbmc/addon-check.git@'
+            '0123456789abcdef0123456789abcdef01234567',
+        })
+        errors = validate_workflow_policy(
+            self.workflow, 'addon-validations.yml'
+        )
+        self.assertTrue(any('--no-deps' in e for e in errors))
+
+    def test_rejects_vcs_build_isolation(self):
+        self.workflow['jobs']['test']['steps'].append({
+            'run': 'python -m pip install --no-deps '
+            'git+https://github.com/xbmc/addon-check.git@'
+            '0123456789abcdef0123456789abcdef01234567',
+        })
+        errors = validate_workflow_policy(
+            self.workflow, 'addon-validations.yml'
+        )
+        self.assertTrue(any('--no-build-isolation' in e for e in errors))
+
+    def test_rejects_packages_mixed_with_immutable_inputs(self):
+        commands = (
+            'pip install --require-hashes '
+            '-r .github/workflow-requirements/test.txt pyyaml',
+            'pip install --no-deps '
+            'git+https://github.com/xbmc/addon-check.git@'
+            '0123456789abcdef0123456789abcdef01234567 coverage',
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.workflow['jobs']['test']['steps'].append({'run': command})
+                errors = validate_workflow_policy(
+                    self.workflow, 'addon-validations.yml'
+                )
+                self.assertTrue(
+                    any('hash-locked requirements' in e for e in errors)
+                )
+                self.workflow['jobs']['test']['steps'].pop()
+
+    def test_accepts_hash_locked_requirements(self):
+        self.workflow['jobs']['test']['steps'].append({
+            'run': 'python3 -m pip install '
+            '-r ".github/workflow-requirements/test.txt" --require-hashes',
+        })
+        errors = validate_workflow_policy(
+            self.workflow, 'addon-validations.yml'
+        )
+        self.assertEqual(errors, [])
+
+    def test_accepts_full_sha_vcs_install_without_dependencies(self):
+        self.workflow['jobs']['test']['steps'].append({
+            'run': 'pip install --no-build-isolation '
+            'git+https://github.com/xbmc/addon-check.git@'
+            '0123456789abcdef0123456789abcdef01234567 --no-deps',
+        })
+        errors = validate_workflow_policy(
+            self.workflow, 'addon-validations.yml'
+        )
+        self.assertEqual(errors, [])
+
+    def test_validate_all_workflows_applies_policy(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / 'addon-validations.yml'
+            path.write_text(
+                'on: push\n'
+                'permissions:\n'
+                '  contents: read\n'
+                'jobs:\n'
+                '  test:\n'
+                '    runs-on: ubuntu-latest\n'
+                '    steps:\n'
+                '      - uses: actions/checkout@v4\n',
+                encoding='utf-8',
+            )
+            _, errors = validate_all_workflows(temp_dir)
+        self.assertTrue(any('40-character commit SHA' in e for e in errors))
 
 
 @unittest.skipUnless(_HAS_YAML, 'pyyaml not installed')

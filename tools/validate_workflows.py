@@ -4,6 +4,8 @@ Parses all workflow YAML files under .github/workflows/ and validates
 structural integrity. Optionally runs actionlint if available.
 """
 
+import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -15,6 +17,24 @@ except ImportError:
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS_DIR = REPO_ROOT / '.github' / 'workflows'
+ACTION_REF_PATTERN = re.compile(r'^[^@\s]+@[0-9a-f]{40}$')
+WORKFLOW_REQUIREMENTS_PATTERN = re.compile(
+    r'^\.github/workflow-requirements/[A-Za-z0-9._-]+\.txt$'
+)
+VCS_PREFIXES = ('git+', 'hg+', 'svn+', 'bzr+')
+PINNED_VCS_REQUIREMENT_PATTERN = re.compile(
+    r'^git\+https://[^@\s]+@[0-9a-f]{40}$'
+)
+WORKFLOW_PERMISSIONS = {
+    'addon-validations.yml': {'contents': 'read'},
+    'make-release.yml': {'actions': 'read', 'contents': 'write'},
+    'notify-repository.yml': {'actions': 'read'},
+    'deploy-pages.yml': {
+        'contents': 'read',
+        'id-token': 'write',
+        'pages': 'write',
+    },
+}
 
 
 def parse_yaml_file(path):
@@ -52,6 +72,232 @@ def validate_workflow_structure(data, filename=''):
     return errors
 
 
+def _uses_references(value):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key == 'uses':
+                yield child
+            else:
+                yield from _uses_references(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _uses_references(child)
+
+
+def _run_scripts(value):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key == 'run' and isinstance(child, str):
+                yield child
+            else:
+                yield from _run_scripts(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _run_scripts(child)
+
+
+def _pip_install_argument_sets(command):
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=';&|')
+    lexer.whitespace_split = True
+    lexer.commenters = '#'
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return ()
+
+    commands = [[]]
+    for token in tokens:
+        if token and all(character in ';&|' for character in token):
+            commands.append([])
+        else:
+            commands[-1].append(token)
+
+    argument_sets = []
+    for tokens in commands:
+        index = 0
+        while index < len(tokens) and re.fullmatch(
+            r'[A-Za-z_][A-Za-z0-9_]*=.*', tokens[index]
+        ):
+            index += 1
+        if index < len(tokens) and Path(tokens[index]).name == 'env':
+            index += 1
+            while index < len(tokens) and re.fullmatch(
+                r'[A-Za-z_][A-Za-z0-9_]*=.*', tokens[index]
+            ):
+                index += 1
+        if index >= len(tokens):
+            continue
+
+        executable = Path(tokens[index]).name
+        if re.fullmatch(r'pip(?:\d+(?:\.\d+)?)?', executable):
+            pip_arguments = tokens[index + 1:]
+        elif (
+            re.fullmatch(r'python(?:\d+(?:\.\d+)?)?', executable)
+            and len(tokens) >= index + 4
+            and tokens[index + 1] == '-m'
+            and tokens[index + 2] == 'pip'
+        ):
+            pip_arguments = tokens[index + 3:]
+        else:
+            continue
+
+        try:
+            install_index = pip_arguments.index('install')
+        except ValueError:
+            continue
+        argument_sets.append(pip_arguments[install_index + 1:])
+    return argument_sets
+
+
+def _requirement_references(arguments):
+    references = []
+    for index, argument in enumerate(arguments):
+        if argument in ('-r', '--requirement'):
+            references.append(
+                arguments[index + 1] if index + 1 < len(arguments) else ''
+            )
+        elif argument.startswith('--requirement='):
+            references.append(argument.split('=', 1)[1])
+        elif argument.startswith('-r') and len(argument) > 2:
+            references.append(argument[2:])
+    return references
+
+
+def _unreviewed_install_arguments(arguments):
+    reviewed_indexes = set()
+    for index, argument in enumerate(arguments):
+        if argument in (
+            '--require-hashes', '--no-build-isolation', '--no-deps'
+        ):
+            reviewed_indexes.add(index)
+        elif argument in ('-r', '--requirement'):
+            reviewed_indexes.add(index)
+            if index + 1 < len(arguments):
+                reviewed_indexes.add(index + 1)
+        elif (
+            argument.startswith('--requirement=')
+            or argument.startswith('-r') and len(argument) > 2
+            or argument.startswith(VCS_PREFIXES)
+        ):
+            reviewed_indexes.add(index)
+    return [
+        argument for index, argument in enumerate(arguments)
+        if index not in reviewed_indexes
+    ]
+
+
+def validate_workflow_policy(data, filename=''):
+    errors = []
+    if not isinstance(data, dict):
+        return errors
+
+    for reference in _uses_references(data):
+        if (
+            not isinstance(reference, str)
+            or not ACTION_REF_PATTERN.fullmatch(reference)
+        ):
+            errors.append(
+                f'{filename}: action reference "{reference}" must use a '
+                '40-character commit SHA'
+            )
+
+    for script in _run_scripts(data):
+        for line in script.replace('\\\n', ' ').splitlines():
+            for arguments in _pip_install_argument_sets(line.strip()):
+                if (
+                    any(
+                        argument in ('-U', '--upgrade')
+                        for argument in arguments
+                    )
+                    and any(
+                        argument.lower() == 'pip' for argument in arguments
+                    )
+                ):
+                    errors.append(f'{filename}: pip self-upgrade is not allowed')
+                references = _requirement_references(arguments)
+                vcs_requirements = tuple(
+                    argument for argument in arguments
+                    if argument.startswith(VCS_PREFIXES)
+                )
+                if references and (
+                    '--require-hashes' not in arguments
+                    or any(
+                        not WORKFLOW_REQUIREMENTS_PATTERN.fullmatch(reference)
+                        for reference in references
+                    )
+                ):
+                    errors.append(
+                        f'{filename}: mutable requirements references are not '
+                        'allowed'
+                    )
+                if vcs_requirements and any(
+                    not PINNED_VCS_REQUIREMENT_PATTERN.fullmatch(requirement)
+                    for requirement in vcs_requirements
+                ):
+                    errors.append(
+                        f'{filename}: VCS installs must use a full 40-character '
+                        'commit SHA'
+                    )
+                if vcs_requirements and '--no-deps' not in arguments:
+                    errors.append(
+                        f'{filename}: VCS installs must use --no-deps'
+                    )
+                if (
+                    vcs_requirements
+                    and '--no-build-isolation' not in arguments
+                ):
+                    errors.append(
+                        f'{filename}: VCS installs must use '
+                        '--no-build-isolation'
+                    )
+                if (
+                    not references and not vcs_requirements
+                    or _unreviewed_install_arguments(arguments)
+                ):
+                    errors.append(
+                        f'{filename}: pip installs must use hash-locked '
+                        'requirements'
+                    )
+
+    expected = WORKFLOW_PERMISSIONS.get(filename)
+    if expected is None:
+        errors.append(f'{filename}: no reviewed workflow permissions policy')
+        return errors
+
+    permissions = data.get('permissions')
+    if permissions is None:
+        errors.append(f'{filename}: missing top-level permissions')
+    elif permissions != expected:
+        errors.append(
+            f'{filename}: top-level permissions must be exactly {expected}'
+        )
+
+    jobs = data.get('jobs', {})
+    if isinstance(jobs, dict):
+        for job_name, job in jobs.items():
+            if not isinstance(job, dict) or 'permissions' not in job:
+                continue
+            job_permissions = job['permissions']
+            if not isinstance(job_permissions, dict):
+                errors.append(
+                    f'{filename}: job "{job_name}" has overbroad job permissions'
+                )
+                continue
+            for scope, access in job_permissions.items():
+                allowed = expected.get(scope)
+                if (
+                    access not in ('none', 'read', 'write')
+                    or allowed is None
+                    or access == 'write' and allowed != 'write'
+                ):
+                    errors.append(
+                        f'{filename}: job "{job_name}" has overbroad job '
+                        f'permissions for {scope}'
+                    )
+
+    return errors
+
+
 def validate_all_workflows(workflows_dir=None):
     if workflows_dir is None:
         workflows_dir = WORKFLOWS_DIR
@@ -67,6 +313,7 @@ def validate_all_workflows(workflows_dir=None):
             parsed[yml.name] = data
             errors = validate_workflow_structure(data, yml.name)
             all_errors.extend(errors)
+            all_errors.extend(validate_workflow_policy(data, yml.name))
         except Exception as exc:
             all_errors.append(f'{yml.name}: parse error: {exc}')
 
@@ -77,6 +324,9 @@ def validate_all_workflows(workflows_dir=None):
                 parsed[yaml_file.name] = data
                 errors = validate_workflow_structure(data, yaml_file.name)
                 all_errors.extend(errors)
+                all_errors.extend(
+                    validate_workflow_policy(data, yaml_file.name)
+                )
             except Exception as exc:
                 all_errors.append(f'{yaml_file.name}: parse error: {exc}')
 

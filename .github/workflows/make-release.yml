@@ -92,14 +92,19 @@ jobs:
               branch: context.ref.replace('refs/tags/', ''),
               per_page: 5,
             });
-            // Also search the default branch for completed validation runs
-            const defaultRuns = await github.rest.actions.listWorkflowRunsForRepo({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              branch: 'develop',
-              per_page: 10,
-            });
-            const allRuns = [...runs.data.workflow_runs, ...defaultRuns.data.workflow_runs];
+            // Also search eligible validation branches for completed runs
+            const eligibleBranches = ['main', 'develop'];
+            const eligibleRuns = [];
+            for (const b of eligibleBranches) {
+              const resp = await github.rest.actions.listWorkflowRunsForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                branch: b,
+                per_page: 10,
+              });
+              eligibleRuns.push(...resp.data.workflow_runs);
+            }
+            const allRuns = [...runs.data.workflow_runs, ...eligibleRuns];
             let found = null;
             for (const run of allRuns) {
               if (

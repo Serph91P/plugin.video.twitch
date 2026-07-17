@@ -258,5 +258,40 @@ class MakeReleaseImmutableContractTests(unittest.TestCase):
             )
 
 
+@unittest.skipUnless(_HAS_YAML, 'pyyaml not installed')
+class MakeReleaseValidationBranchSearchTests(unittest.TestCase):
+    """Tests that the find-run step searches all branches eligible for validation."""
+
+    def setUp(self):
+        self.release_data = parse_yaml_file(
+            ROOT / '.github' / 'workflows' / 'make-release.yml'
+        )
+        self.validations_data = parse_yaml_file(
+            ROOT / '.github' / 'workflows' / 'addon-validations.yml'
+        )
+        self.release_job = self.release_data['jobs']['release']
+
+    def _find_run_script(self):
+        for step in self.release_job['steps']:
+            if step.get('id') == 'find-run':
+                return step.get('with', {}).get('script', '')
+        self.fail('no find-run step found')
+
+    def _validation_push_branches(self):
+        on_block = self.validations_data.get('on', self.validations_data.get(True, {}))
+        return set(on_block.get('push', {}).get('branches', []))
+
+    def test_find_run_searches_all_validation_eligible_branches(self):
+        """The find-run step must search every branch that addon-validations pushes to."""
+        eligible = self._validation_push_branches()
+        script = self._find_run_script()
+        for branch in eligible:
+            self.assertIn(
+                f"'{branch}'",
+                script,
+                f"find-run script must reference branch '{branch}' from validation triggers",
+            )
+
+
 if __name__ == '__main__':
     unittest.main()

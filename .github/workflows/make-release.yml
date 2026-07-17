@@ -119,6 +119,7 @@ jobs:
                 run.name === 'Add-on Validations'
                 && run.conclusion === 'success'
                 && run.head_sha === context.sha
+                && eligibleBranches.includes(run.head_branch)
               ) {
                 found = run;
                 break;

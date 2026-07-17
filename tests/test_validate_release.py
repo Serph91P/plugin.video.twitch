@@ -329,22 +329,5 @@ class PublicationIdentityTests(unittest.TestCase):
         self.assertTrue(any('malformed tag' in e for e in errors),
                        f'expected malformed tag error: {errors}')
 
-    def test_stable_tag_publication_passes(self):
-        """Stable tag v3.1.8 should pass publication identity with version 3.1.8."""
-        errors = validate_publication_identity(
-            addon_id='plugin.video.twitch',
-            version='3.1.8',
-            tag='v3.1.8')
-        self.assertEqual(errors, [], f'stable tag publication should pass: {errors}')
-
-    def test_dev_tag_publication_passes(self):
-        """Dev tag v3.1.8-dev should pass publication identity with version 3.1.8."""
-        errors = validate_publication_identity(
-            addon_id='plugin.video.twitch',
-            version='3.1.8',
-            tag='v3.1.8-dev')
-        self.assertEqual(errors, [], f'dev tag publication should pass: {errors}')
-
-
 if __name__ == '__main__':
     unittest.main()

@@ -39,17 +39,15 @@ process.stdin.on("end", function() {
   var script = scenario.script;
   var ctx = scenario.context;
   var apiLog = [];
-  var responses = scenario.apiCalls || [];
-  var responseIdx = 0;
+  var responses = scenario.apiCalls || {};
   var github = {
     rest: {
       actions: {
         listWorkflowRunsForRepo: async function(params) {
           apiLog.push({ method: "listWorkflowRunsForRepo", params: Object.assign({}, params) });
-          if (responseIdx < responses.length) {
-            var resp = responses[responseIdx];
-            responseIdx++;
-            return resp;
+          var key = params.branch + "|" + (params.page || "");
+          if (responses[key]) {
+            return responses[key];
           }
           return { data: { workflow_runs: [] } };
         }
@@ -117,11 +115,13 @@ def _run_find_run_harness(scenario):
 
 def _make_find_scenario(*, sha="abc123def456", ref="refs/tags/v1.0.0",
                         owner="test-owner", repo="test-repo",
-                        tag_runs=None, eligible_runs=None):
-    api_calls = [{"data": {"workflow_runs": tag_runs or []}}]
-    for branch in ("main", "develop"):
-        for page_runs in (eligible_runs or {}).get(branch, []):
-            api_calls.append({"data": {"workflow_runs": page_runs}})
+                        tag_runs=None, branch_pages=None):
+    tag_branch = ref.replace("refs/tags/", "")
+    api_calls = {tag_branch + "|": {"data": {"workflow_runs": tag_runs or []}}}
+    if branch_pages:
+        for branch, pages in branch_pages.items():
+            for page_num, runs in pages.items():
+                api_calls[branch + "|" + str(page_num)] = {"data": {"workflow_runs": runs}}
     return {
         "script": _extract_find_run_script(),
         "context": {"owner": owner, "repo": repo, "ref": ref, "sha": sha},
@@ -381,7 +381,7 @@ class MakeReleaseFindRunBehaviorTests(unittest.TestCase):
         bad = [_make_find_run(run_id=i, name="Other", head_branch="main") for i in range(10)]
         scenario = _make_find_scenario(
             sha=sha, tag_runs=[],
-            eligible_runs={"main": [bad, [good]], "develop": []},
+            branch_pages={"main": {1: bad, 2: [good]}},
         )
         result = _run_find_run_harness(scenario)
         self.assertFalse(result["failed"], result.get("failureMessage"))
@@ -392,29 +392,27 @@ class MakeReleaseFindRunBehaviorTests(unittest.TestCase):
         cases = {
             "wrong_workflow_name": dict(
                 tag_runs=[_make_find_run(run_id=1, name="Wrong Workflow", head_sha=sha)],
-                eligible_runs={"main": [], "develop": []},
             ),
             "wrong_sha": dict(
                 tag_runs=[_make_find_run(run_id=1, head_sha="wrongsha")],
-                eligible_runs={"main": [], "develop": []},
             ),
             "stale_sha": dict(
-                eligible_runs={"main": [[_make_find_run(run_id=1, head_sha="old")]], "develop": []},
+                branch_pages={"main": {1: [_make_find_run(run_id=1, head_sha="old")]}},
             ),
             "wrong_workflow_eligible": dict(
-                eligible_runs={"main": [[_make_find_run(run_id=1, name="CI Tests", head_sha=sha)]], "develop": []},
+                branch_pages={"main": {1: [_make_find_run(run_id=1, name="CI Tests", head_sha=sha)]}},
             ),
             "wrong_commit": dict(
-                eligible_runs={"main": [[_make_find_run(run_id=1, head_sha="other")]], "develop": []},
+                branch_pages={"main": {1: [_make_find_run(run_id=1, head_sha="other")]}},
             ),
             "unsuccessful": dict(
-                eligible_runs={"main": [[_make_find_run(run_id=1, conclusion="failure", head_sha=sha)]], "develop": []},
+                branch_pages={"main": {1: [_make_find_run(run_id=1, conclusion="failure", head_sha=sha)]}},
             ),
             "absent": dict(
-                tag_runs=[], eligible_runs={"main": [], "develop": []},
+                tag_runs=[],
             ),
             "malformed": dict(
-                eligible_runs={"main": [[{"id": 1}]], "develop": []},
+                branch_pages={"main": {1: [{"id": 1}]}},
             ),
         }
         for label, kwargs in cases.items():
@@ -429,7 +427,6 @@ class MakeReleaseFindRunBehaviorTests(unittest.TestCase):
                 scenario = _make_find_scenario(
                     sha=sha,
                     tag_runs=[_make_find_run(run_id=1, conclusion=conclusion, head_sha=sha)],
-                    eligible_runs={"main": [], "develop": []},
                 )
                 result = _run_find_run_harness(scenario)
                 self.assertTrue(result["failed"], f"reject conclusion={conclusion}")
@@ -439,7 +436,6 @@ class MakeReleaseFindRunBehaviorTests(unittest.TestCase):
         scenario = _make_find_scenario(
             ref="refs/tags/v1.0.0", sha=sha,
             tag_runs=[_make_find_run(run_id=100, head_sha=sha, head_branch="fix/some-feature")],
-            eligible_runs={"main": [], "develop": []},
         )
         result = _run_find_run_harness(scenario)
         self.assertTrue(result["failed"], "must not select non-eligible branch")
@@ -450,7 +446,7 @@ class MakeReleaseFindRunBehaviorTests(unittest.TestCase):
         scenario = _make_find_scenario(
             ref="refs/tags/v1.0.0", sha=sha,
             tag_runs=[_make_find_run(run_id=100, head_sha=sha, head_branch="fix/some-feature")],
-            eligible_runs={"main": [[_make_find_run(run_id=200, head_sha=sha, head_branch="main")]], "develop": []},
+            branch_pages={"main": {1: [_make_find_run(run_id=200, head_sha=sha, head_branch="main")]}},
         )
         result = _run_find_run_harness(scenario)
         self.assertFalse(result["failed"], result.get("failureMessage"))
@@ -458,26 +454,52 @@ class MakeReleaseFindRunBehaviorTests(unittest.TestCase):
 
     def test_pagination_bounds(self):
         sha = "abc123"
-        pages = [[_make_find_run(run_id=i*10+j, head_branch="main") for j in range(10)] for i in range(5)]
-        scenario = _make_find_scenario(sha=sha, eligible_runs={"main": pages, "develop": []})
+        pages = {i: [_make_find_run(run_id=(i-1)*10+j, head_branch="main") for j in range(10)] for i in range(1, 6)}
+        scenario = _make_find_scenario(sha=sha, branch_pages={"main": pages})
         result = _run_find_run_harness(scenario)
         main_calls = [c for c in result["apiLog"] if c["params"].get("branch") == "main"]
         self.assertLessEqual(len(main_calls), 5, "must not exceed maxPages")
         self.assertTrue(result["failed"], "no match within bounds should fail")
 
+    def test_over_limit_match_not_selected(self):
+        sha = "abc123"
+        match = _make_find_run(run_id=999, head_sha=sha, head_branch="main")
+        scenario = _make_find_scenario(
+            sha=sha,
+            branch_pages={"main": {6: [match]}},
+        )
+        result = _run_find_run_harness(scenario)
+        self.assertTrue(result["failed"], "over-limit match must not be selected")
+        main_calls = [c for c in result["apiLog"] if c["params"].get("branch") == "main"]
+        self.assertLessEqual(len(main_calls), 5, "must not query beyond maxPages")
+        for c in main_calls:
+            self.assertLessEqual(c["params"].get("page", 1), 5,
+                                 "page number must not exceed maxPages")
+
     def test_both_branches_searched(self):
         sha = "abc123"
         good = _make_find_run(run_id=50, head_sha=sha, head_branch="develop")
         scenario = _make_find_scenario(
-            sha=sha, eligible_runs={"main": [], "develop": [[good]]},
+            sha=sha, branch_pages={"main": {1: []}, "develop": {1: [good]}},
         )
         result = _run_find_run_harness(scenario)
         self.assertFalse(result["failed"], result.get("failureMessage"))
         self.assertEqual(result["outputs"]["validation_run_id"], 50)
+        branch_calls = [
+            c["params"]["branch"] for c in result["apiLog"]
+            if c["params"].get("branch") in ("main", "develop")
+        ]
+        self.assertIn("main", branch_calls, "main must be queried")
+        self.assertIn("develop", branch_calls, "develop must be queried")
+        self.assertLess(
+            branch_calls.index("main"),
+            branch_calls.index("develop"),
+            "main must be queried before develop",
+        )
 
     def test_main_before_develop(self):
         sha = "abc123"
-        scenario = _make_find_scenario(sha=sha, eligible_runs={"main": [[]], "develop": [[]]})
+        scenario = _make_find_scenario(sha=sha, branch_pages={"main": {1: []}, "develop": {1: []}})
         result = _run_find_run_harness(scenario)
         branch_order = [c["params"]["branch"] for c in result["apiLog"] if c["params"].get("branch") in ("main", "develop")]
         if len(branch_order) >= 2:
@@ -488,7 +510,6 @@ class MakeReleaseFindRunBehaviorTests(unittest.TestCase):
         scenario = _make_find_scenario(
             ref="refs/tags/v1.0.0", sha=sha,
             tag_runs=[_make_find_run(run_id=99, head_sha=sha, head_branch="main")],
-            eligible_runs={"main": [], "develop": []},
         )
         result = _run_find_run_harness(scenario)
         self.assertFalse(result["failed"], result.get("failureMessage"))

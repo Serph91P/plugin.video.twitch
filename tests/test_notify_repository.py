@@ -47,11 +47,12 @@ const core = {
   setOutput: (name, val) => { outputs[name] = val; },
 };
 
+const context = {
+  repo: mockConfig.repo,
+  payload: mockConfig.payload,
+};
+
 const github = {
-  context: {
-    repo: mockConfig.repo,
-    payload: mockConfig.payload,
-  },
   rest: {
     actions: {
       listWorkflowRunArtifacts: async (params) => {
@@ -69,9 +70,9 @@ const github = {
 
 (async () => {
   try {
-    const fn = new Function('github', 'core',
+    const fn = new Function('github', 'context', 'core',
       'return (async () => {' + scriptText + '})()');
-    await fn(github, core);
+    await fn(github, context, core);
   } catch (e) {
     output.push({type: 'error', msg: e.message});
   }
@@ -80,7 +81,7 @@ const github = {
     dispatchCalls,
     listWorkflowRunArtifactsCalls,
     outputs,
-    failed: output.some(o => o.type === 'failed'),
+    failed: output.some(o => o.type === 'failed' || o.type === 'error'),
   }));
 })();
 """

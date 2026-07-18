@@ -1,0 +1,8 @@
+packaging==26.2
+pillow==12.3.0
+polib==1.2.0
+radon==6.0.1
+requests==2.34.2
+setuptools==80.9.0
+urllib3==2.7.0
+xmlschema==4.3.2

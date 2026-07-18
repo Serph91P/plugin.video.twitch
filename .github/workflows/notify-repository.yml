@@ -248,7 +248,7 @@ jobs:
               validation_run_id: run.id,
               validation_head_sha: run.head_sha,
               validation_workflow: run.name,
-              validation_workflow_path: '.github/workflows/addon-validations.yml@develop',
+              validation_workflow_path: '.github/workflows/addon-validations.yml',
               expected_branch: run.head_branch,
               publication_id: evidence.publication_id,
             };

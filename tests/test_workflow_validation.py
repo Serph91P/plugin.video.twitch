@@ -358,6 +358,202 @@ class WorkflowPolicyTests(unittest.TestCase):
         )
         self.assertEqual(errors, [])
 
+    def test_rejects_env_option_operand_bypass(self):
+        """env options with operands must not hide nested mutable installs."""
+        commands = (
+            'env -u FOO pip install pyyaml',
+            'env --unset FOO pip install pyyaml',
+            'env --unset=FOO pip install pyyaml',
+            'env -C /tmp pip install pyyaml',
+            'env --chdir /tmp pip install pyyaml',
+            'env --chdir=/tmp pip install pyyaml',
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.workflow['jobs']['test']['steps'].append({
+                    'run': command,
+                })
+                errors = validate_workflow_policy(
+                    self.workflow, 'addon-validations.yml'
+                )
+                self.assertTrue(
+                    any('hash-locked requirements' in e for e in errors),
+                    f'env option operand bypass not rejected: {command}',
+                )
+                self.workflow['jobs']['test']['steps'].pop()
+
+    def test_accepts_version_help_terminal_options_not_executed(self):
+        """env --version/-V and --help are terminal; trailing text must not be parsed as executed command."""
+        commands = (
+            'env --version pip install pyyaml',
+            'env -V pip install pyyaml',
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.workflow['jobs']['test']['steps'].append({
+                    'run': command,
+                })
+                errors = validate_workflow_policy(
+                    self.workflow, 'addon-validations.yml'
+                )
+                self.assertEqual(
+                    errors, [],
+                    f'version/help terminal option caused false positive: {command}',
+                )
+                self.workflow['jobs']['test']['steps'].pop()
+
+    def test_rejects_attached_env_short_operand_bypass(self):
+        """GNU env attached short operands -uNAME and -CDIR must not hide nested mutable installs."""
+        commands = (
+            'env -uFOO pip install pyyaml',
+            'env -C/tmp pip install pyyaml',
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.workflow['jobs']['test']['steps'].append({
+                    'run': command,
+                })
+                errors = validate_workflow_policy(
+                    self.workflow, 'addon-validations.yml'
+                )
+                self.assertTrue(
+                    any('hash-locked requirements' in e for e in errors),
+                    f'env attached short operand bypass not rejected: {command}',
+                )
+                self.workflow['jobs']['test']['steps'].pop()
+
+    def test_accepts_ordinary_executable_not_mistaken_for_env_operand(self):
+        """Ordinary executables whose second char is u or C must not be consumed as env -u/-C."""
+        commands = (
+            'env curl pip install pyyaml',
+            'env cargo pip install pyyaml',
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.workflow['jobs']['test']['steps'].append({
+                    'run': command,
+                })
+                errors = validate_workflow_policy(
+                    self.workflow, 'addon-validations.yml'
+                )
+                self.assertEqual(
+                    errors, [],
+                    f'ordinary executable falsely consumed as env operand: {command}',
+                )
+                self.workflow['jobs']['test']['steps'].pop()
+
+    def test_accepts_legitimate_attached_env_short_operand_usage(self):
+        """Legitimate env attached short operands around immutable installs must be accepted."""
+        commands = (
+            'env -uFOO pip install -r .github/workflow-requirements/test.txt --require-hashes',
+            'env -C/tmp pip install -r .github/workflow-requirements/test.txt --require-hashes',
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.workflow['jobs']['test']['steps'].append({
+                    'run': command,
+                })
+                errors = validate_workflow_policy(
+                    self.workflow, 'addon-validations.yml'
+                )
+                self.assertEqual(
+                    errors, [],
+                    f'legitimate attached env short operand rejected: {command}',
+                )
+                self.workflow['jobs']['test']['steps'].pop()
+
+    def test_accepts_non_operand_shell_flag_before_script(self):
+        """Non-operand shell flags followed by a script must not cause false nested -c detection."""
+        commands = (
+            'bash --debugger myscript.py',
+            'bash --debugger myscript.py install pyyaml',
+            'bash --norc myscript.py',
+            'bash --noprofile myscript.py',
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.workflow['jobs']['test']['steps'].append({
+                    'run': command,
+                })
+                errors = validate_workflow_policy(
+                    self.workflow, 'addon-validations.yml'
+                )
+                self.assertEqual(
+                    errors, [],
+                    f'non-operand shell flag caused false positive: {command}',
+                )
+                self.workflow['jobs']['test']['steps'].pop()
+
+    def test_accepts_rcfile_operand_consumed_even_when_starting_with_dash(self):
+        """bash --rcfile -c 'script' must consume -c as rcfile operand, not as shell flag."""
+        commands = (
+            'bash --rcfile -c "pip install pyyaml"',
+            'bash --init-file -c "pip install pyyaml"',
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.workflow['jobs']['test']['steps'].append({
+                    'run': command,
+                })
+                errors = validate_workflow_policy(
+                    self.workflow, 'addon-validations.yml'
+                )
+                self.assertEqual(
+                    errors, [],
+                    f'rcfile operand starting with dash caused false positive: {command}',
+                )
+                self.workflow['jobs']['test']['steps'].pop()
+
+    def test_rejects_shell_option_operand_bypass_before_c(self):
+        """Shell options consuming operands before -c must not hide nested mutable installs."""
+        commands = (
+            'bash --rcfile /etc/bashrc -c "pip install pyyaml"',
+            'bash -O OPTNAME -c "pip install pyyaml"',
+            'bash -o posix -c "pip install pyyaml"',
+            'bash --rcfile /etc/bashrc -lc "pip install pyyaml"',
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.workflow['jobs']['test']['steps'].append({
+                    'run': command,
+                })
+                errors = validate_workflow_policy(
+                    self.workflow, 'addon-validations.yml'
+                )
+                self.assertTrue(
+                    any('hash-locked requirements' in e for e in errors),
+                    f'shell option operand bypass not rejected: {command}',
+                )
+                self.workflow['jobs']['test']['steps'].pop()
+
+    def test_accepts_legitimate_wrapper_usage_around_immutable(self):
+        """Legitimate env/shell wrappers around immutable installs must be accepted."""
+        commands = (
+            'env -u FOO pip install -r .github/workflow-requirements/test.txt --require-hashes',
+            'env --unset FOO pip install -r .github/workflow-requirements/test.txt --require-hashes',
+            'env -C /tmp pip install -r .github/workflow-requirements/test.txt --require-hashes',
+            'env --chdir /tmp pip install -r .github/workflow-requirements/test.txt --require-hashes',
+            'bash --rcfile /etc/bashrc -c "pip install -r .github/workflow-requirements/test.txt --require-hashes"',
+            'bash -O OPTNAME -c "pip install -r .github/workflow-requirements/test.txt --require-hashes"',
+            'bash -o posix -c "pip install -r .github/workflow-requirements/test.txt --require-hashes"',
+            'bash --rcfile /etc/bashrc -c "pip install --no-build-isolation git+https://github.com/xbmc/addon-check.git@0123456789abcdef0123456789abcdef01234567 --no-deps"',
+            'env -uFOO pip install -r .github/workflow-requirements/test.txt --require-hashes',
+            'env -C/tmp pip install -r .github/workflow-requirements/test.txt --require-hashes',
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.workflow['jobs']['test']['steps'].append({
+                    'run': command,
+                })
+                errors = validate_workflow_policy(
+                    self.workflow, 'addon-validations.yml'
+                )
+                self.assertEqual(
+                    errors, [],
+                    f'legitimate wrapper rejected: {command}',
+                )
+                self.workflow['jobs']['test']['steps'].pop()
+
     def test_validate_all_workflows_applies_policy(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / 'addon-validations.yml'

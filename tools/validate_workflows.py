@@ -131,14 +131,26 @@ def _extract_pip_install_from_tokens(tokens, index=0):
     while index < n and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*=.*', tokens[index]):
         index += 1
 
-    # Skip 'env' command with its options (--ignore-environment, -i), assignments, and -- separator
+    # Skip 'env' command with its options, assignments, and -- separator
     if index < n and Path(tokens[index]).name == 'env':
         index += 1
-        while index < n and (
-            re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*=.*', tokens[index])
-            or tokens[index] in ('-i', '--ignore-environment')
-        ):
-            index += 1
+        while index < n:
+            token = tokens[index]
+            if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*=.*', token):
+                index += 1
+            elif token in ('-i', '--ignore-environment'):
+                index += 1
+            elif token in ('-u', '--unset', '-C', '--chdir'):
+                index += 2
+            elif token.startswith('-') and len(token) > 2 and token[1] in ('u', 'C'):
+                index += 1
+            elif (
+                token.startswith('--unset=')
+                or token.startswith('--chdir=')
+            ):
+                index += 1
+            else:
+                break
         if index < n and tokens[index] == '--':
             index += 1
 
@@ -196,11 +208,20 @@ def _find_shell_command_arg(tokens, index, n):
     Handles: -c "cmd", -c 'cmd', -lc "cmd", -cl "cmd", --longopt -c "cmd", -c -l "cmd"
     Returns the command string or None if not found.
     """
+    _LONG_OPTIONS_WITH_OPERANDS = frozenset((
+        '--rcfile', '--init-file',
+    ))
     while index < n:
         token = tokens[index]
-        # Long option (--foo)
+        # Long option (--foo or --foo=bar)
         if token.startswith('--'):
-            index += 1
+            option_name = token.split('=', 1)[0]
+            if '=' in token or option_name not in _LONG_OPTIONS_WITH_OPERANDS:
+                index += 1
+            else:
+                index += 1
+                if index < n:
+                    index += 1
             continue
         # Standalone -c (check BEFORE short option cluster)
         if token == '-c':
@@ -219,8 +240,11 @@ def _find_shell_command_arg(tokens, index, n):
                 if index + 1 < n:
                     return tokens[index + 1]
                 return None
-            # Cluster without c, just skip
-            index += 1
+            # Short options -O and -o take an operand
+            if len(token) == 2 and token[1] in ('O', 'o'):
+                index += 2
+            else:
+                index += 1
             continue
         # Not an option, stop scanning
         break

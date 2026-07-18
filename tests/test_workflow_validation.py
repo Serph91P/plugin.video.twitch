@@ -1232,7 +1232,7 @@ class AddonValidationsStructureTests(unittest.TestCase):
         self.assertIn('security-scan', self.data['jobs'])
 
     def test_kodi_checker_uses_package_artifact(self):
-        """Kodi checker should download and extract the package artifact, not checkout the full repo."""
+        """Kodi checker should use the package artifact, not a full checkout."""
         job = self.data['jobs']['kodi-check']
         step_names = [s.get('name', '') for s in job['steps']]
         step_runs = [s.get('run', '') for s in job['steps']]
@@ -1240,9 +1240,14 @@ class AddonValidationsStructureTests(unittest.TestCase):
         has_unzip = any('unzip' in r.lower() for r in step_runs)
         self.assertTrue(has_download or has_unzip,
                         'kodi-check should download and extract the package artifact')
-        has_checkout = any('checkout' in n.lower() for n in step_names)
-        self.assertFalse(has_checkout,
-                         'kodi-check should not checkout the full repository')
+        checkout = next(
+            step for step in job['steps']
+            if step.get('uses', '').startswith('actions/checkout@')
+        )
+        self.assertEqual(
+            checkout.get('with', {}).get('sparse-checkout'),
+            '.github/workflow-requirements/addon-check.txt',
+        )
 
     def test_kodi_checker_extracts_rooted_archive_without_double_nesting(self):
         job = self.data['jobs']['kodi-check']

@@ -2,11 +2,9 @@
 
 Extracts the real embedded JavaScript from the workflow's github-script
 step and executes it via Node.js with mocked github/core objects.
-Covers acceptance of the exact valid run plus rejection of every
-contract violation: wrong event, wrong branch, wrong conclusion,
-wrong workflow name, malformed SHA, malformed run ID, missing
-artifact, duplicate artifact, expired artifact, head mismatch,
-token boundary separation, and fail-closed pagination.
+Covers acceptance of the exact valid run and evidence plus rejection of
+contract violations including workflow path, publication identity,
+artifact cardinality, expiry, token separation, and bounded pagination.
 """
 
 import json
@@ -27,12 +25,16 @@ except ImportError:
     _HAS_YAML = False
 
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "notify-repository.yml"
+VALIDATION_WORKFLOW_PATH = (
+    ROOT / ".github" / "workflows" / "addon-validations.yml"
+)
 NODE_BIN = "node"
 
 HARNESS_TEMPLATE = r"""
 const fs = require('fs');
 const mockConfig = JSON.parse(fs.readFileSync('@@CONFIG_PATH@@', 'utf8'));
-const scriptText = fs.readFileSync('@@SCRIPT_PATH@@', 'utf8');
+const scriptTexts = JSON.parse(fs.readFileSync('@@SCRIPT_PATH@@', 'utf8'));
+process.env.VALIDATION_EVIDENCE_PATH = mockConfig.evidencePath;
 
 const output = [];
 const dispatchCalls = [];
@@ -70,9 +72,12 @@ const github = {
 
 (async () => {
   try {
-    const fn = new Function('github', 'context', 'core',
-      'return (async () => {' + scriptText + '})()');
-    await fn(github, context, core);
+    for (const scriptText of scriptTexts) {
+      const fn = new Function('github', 'context', 'core', 'require',
+        'return (async () => {' + scriptText + '})()');
+      await fn(github, context, core, require);
+      if (output.some(o => o.type === 'failed' || o.type === 'error')) break;
+    }
   } catch (e) {
     output.push({type: 'error', msg: e.message});
   }
@@ -92,30 +97,45 @@ def _load_workflow():
         return yaml.safe_load(f)
 
 
-def _extract_script(data):
-    for job_name, job in data.get("jobs", {}).items():
+def _load_validation_workflow():
+    with open(VALIDATION_WORKFLOW_PATH) as f:
+        return yaml.safe_load(f)
+
+
+def _extract_scripts(data):
+    scripts = []
+    for job in data.get("jobs", {}).values():
         for step in job.get("steps", []):
             if "github-script" in step.get("uses", ""):
+                scripts.append(step.get("with", {}).get("script", ""))
+    return scripts
+
+
+def _extract_script(data, step_id):
+    for job in data.get("jobs", {}).values():
+        for step in job.get("steps", []):
+            if step.get("id") == step_id:
                 return step.get("with", {}).get("script", "")
     return None
 
 
-def _extract_step_id(data):
-    for job_name, job in data.get("jobs", {}).items():
-        for step in job.get("steps", []):
-            if "github-script" in step.get("uses", ""):
-                return step.get("id", "")
-    return ""
-
-
-def _run_with_mocks(script_text, mock_config):
+def _run_with_mocks(script_texts, mock_config):
     with tempfile.TemporaryDirectory() as tmpdir:
         script_path = os.path.join(tmpdir, "script.js")
         config_path = os.path.join(tmpdir, "config.json")
         harness_path = os.path.join(tmpdir, "harness.js")
+        evidence_dir = Path(tmpdir) / "validation-artifacts"
+        evidence_dir.mkdir()
+        evidence_path = evidence_dir / "validation-evidence.json"
 
         with open(script_path, "w") as f:
-            f.write(script_text)
+            json.dump(script_texts, f)
+
+        evidence = mock_config.get("evidence")
+        if evidence is not None:
+            evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+        mock_config = dict(mock_config)
+        mock_config["evidencePath"] = str(evidence_path)
 
         with open(config_path, "w") as f:
             json.dump(mock_config, f)
@@ -154,6 +174,7 @@ def _valid_run(**overrides):
         "conclusion": "success",
         "head_branch": "develop",
         "head_sha": "a" * 40,
+        "path": ".github/workflows/addon-validations.yml",
     }
     run.update(overrides)
     return run
@@ -169,7 +190,23 @@ def _valid_artifacts():
     }
 
 
-def _config(run_overrides=None, artifacts=None, pages=None):
+def _valid_evidence(**overrides):
+    evidence = {
+        "candidate_sha": "a" * 40,
+        "validation_run_id": "12345",
+        "validation_head_sha": "a" * 40,
+        "addon_id": "plugin.video.twitch",
+        "addon_version": "3.1.11",
+        "asset_name": "plugin.video.twitch-3.1.11.zip",
+        "artifact_sha256": "b" * 64,
+        "tag": "",
+        "publication_id": "plugin.video.twitch@3.1.11",
+    }
+    evidence.update(overrides)
+    return evidence
+
+
+def _config(run_overrides=None, artifacts=None, pages=None, evidence=None):
     run = _valid_run(**(run_overrides or {}))
     if pages is None:
         if artifacts is not None:
@@ -180,6 +217,7 @@ def _config(run_overrides=None, artifacts=None, pages=None):
         "repo": {"owner": "Serph91P", "repo": "plugin.video.twitch"},
         "payload": {"workflow_run": run},
         "pages": pages,
+        "evidence": _valid_evidence() if evidence is None else evidence,
     }
 
 
@@ -190,17 +228,23 @@ def _config(run_overrides=None, artifacts=None, pages=None):
 
 @unittest.skipUnless(_HAS_YAML, "pyyaml not installed")
 class NotifyWorkflowTokenBoundaryTests(unittest.TestCase):
-    """Verify the github-script step uses the native token for artifact
-    listing and that dispatch uses a separate step with the PAT."""
+    """Verify validation uses the native token and dispatch uses the PAT."""
 
     @classmethod
     def setUpClass(cls):
         cls.data = _load_workflow()
 
-    def _github_script_step(self):
+    def _github_script_steps(self):
+        job = self.data["jobs"]["validated-publication"]
+        return [
+            step for step in job.get("steps", [])
+            if "github-script" in step.get("uses", "")
+        ]
+
+    def _download_step(self):
         job = self.data["jobs"]["validated-publication"]
         for step in job.get("steps", []):
-            if "github-script" in step.get("uses", ""):
+            if "download-artifact" in step.get("uses", ""):
                 return step
         return None
 
@@ -211,28 +255,40 @@ class NotifyWorkflowTokenBoundaryTests(unittest.TestCase):
                 return step
         return None
 
-    def test_github_script_step_exists(self):
-        step = self._github_script_step()
-        self.assertIsNotNone(step, "github-script step must exist")
+    def test_two_github_script_steps_exist(self):
+        self.assertEqual(len(self._github_script_steps()), 2)
 
     def test_repository_dispatch_step_exists(self):
         step = self._repository_dispatch_step()
         self.assertIsNotNone(step, "peter-evans/repository-dispatch step must exist")
 
-    def test_github_script_uses_native_token(self):
-        step = self._github_script_step()
-        token_expr = step.get("with", {}).get("github-token", "")
-        self.assertEqual(
-            token_expr,
-            "${{ github.token }}",
-            "github-script must use github.token, not a PAT",
-        )
+    def test_github_scripts_use_native_token(self):
+        for step in self._github_script_steps():
+            token_expr = step.get("with", {}).get("github-token", "")
+            self.assertEqual(
+                token_expr,
+                "${{ github.token }}",
+                "github-script must use github.token, not a PAT",
+            )
 
-    def test_github_script_does_not_use_dispatch_token(self):
-        step = self._github_script_step()
-        token_expr = step.get("with", {}).get("github-token", "")
-        self.assertNotIn("REPO_DISPATCH_TOKEN", token_expr,
-                         "github-script must not use REPO_DISPATCH_TOKEN")
+    def test_native_validation_steps_do_not_use_dispatch_token(self):
+        native_steps = self._github_script_steps() + [self._download_step()]
+        for step in native_steps:
+            self.assertIsNotNone(step)
+            self.assertNotIn("REPO_DISPATCH_TOKEN", json.dumps(step))
+
+    def test_download_uses_exact_artifact_id_and_run(self):
+        step = self._download_step()
+        self.assertIsNotNone(step)
+        inputs = step.get("with", {})
+        self.assertEqual(inputs.get("github-token"), "${{ github.token }}")
+        self.assertEqual(
+            inputs.get("artifact-ids"),
+            "${{ steps.validate-run.outputs.validation_evidence_artifact_id }}",
+        )
+        self.assertEqual(inputs.get("run-id"), "${{ github.event.workflow_run.id }}")
+        self.assertEqual(inputs.get("repository"), "${{ github.repository }}")
+        self.assertTrue(inputs.get("merge-multiple"))
 
     def test_repository_dispatch_uses_dispatch_token(self):
         step = self._repository_dispatch_step()
@@ -254,36 +310,32 @@ class NotifyWorkflowTokenBoundaryTests(unittest.TestCase):
         self.assertEqual(repo, "Serph91P/repository.serph91p")
 
     def test_github_script_has_step_id(self):
-        step = self._github_script_step()
-        self.assertIn("id", step, "github-script step must have an id for output reference")
+        for step in self._github_script_steps():
+            self.assertIn(
+                "id", step, "github-script step must have an id for output reference"
+            )
 
     def test_repository_dispatch_references_script_output(self):
         dispatch_step = self._repository_dispatch_step()
         payload_ref = dispatch_step.get("with", {}).get("client-payload", "")
-        script_step = self._github_script_step()
-        script_id = script_step.get("id", "")
-        self.assertTrue(
-            script_id and script_id in payload_ref,
-            f"repository-dispatch client-payload must reference step id "
-            f"'{script_id}', got '{payload_ref}'",
-        )
+        self.assertEqual(payload_ref, "${{ steps.validate-evidence.outputs.payload }}")
 
     def test_script_does_not_call_createDispatchEvent(self):
-        script = _extract_script(self.data)
-        self.assertNotIn("createDispatchEvent", script,
+        scripts = "\n".join(_extract_scripts(self.data))
+        self.assertNotIn("createDispatchEvent", scripts,
                          "github-script must not call createDispatchEvent; "
                          "dispatch belongs to a separate step")
 
-    def test_script_outputs_payload(self):
-        script = _extract_script(self.data)
+    def test_evidence_script_outputs_payload(self):
+        script = _extract_script(self.data, "validate-evidence")
         self.assertIn("setOutput", script,
-                       "github-script must emit payload via core.setOutput")
+                       "evidence script must emit payload via core.setOutput")
 
-    def test_two_steps_only(self):
+    def test_four_steps_only(self):
         job = self.data["jobs"]["validated-publication"]
         steps = job.get("steps", [])
-        self.assertEqual(len(steps), 2,
-                         f"job must have exactly 2 steps, found {len(steps)}")
+        self.assertEqual(len(steps), 4,
+                         f"job must have exactly 4 steps, found {len(steps)}")
 
 
 @unittest.skipUnless(_HAS_YAML, "pyyaml not installed")
@@ -294,12 +346,12 @@ class NotifyWorkflowTokenBoundaryRuntimeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.data = _load_workflow()
-        cls.script = _extract_script(cls.data)
-        if not cls.script:
-            raise AssertionError("No github-script step found")
+        cls.scripts = _extract_scripts(cls.data)
+        if len(cls.scripts) != 2:
+            raise AssertionError("Expected two github-script steps")
 
     def test_valid_run_outputs_payload_no_dispatch(self):
-        result = _run_with_mocks(self.script, _config())
+        result = _run_with_mocks(self.scripts, _config())
         self.assertFalse(result["failed"], f"script failed: {result['output']}")
         self.assertEqual(len(result["dispatchCalls"]), 0,
                          "script must not call createDispatchEvent directly")
@@ -311,15 +363,94 @@ class NotifyWorkflowTokenBoundaryRuntimeTests(unittest.TestCase):
         self.assertEqual(payload["validation_run_id"], 12345)
         self.assertEqual(payload["validation_head_sha"], "a" * 40)
         self.assertEqual(payload["validation_workflow"], "Add-on Validations")
+        self.assertEqual(
+            payload["validation_workflow_path"],
+            ".github/workflows/addon-validations.yml@develop",
+        )
         self.assertEqual(payload["expected_branch"], "develop")
+        self.assertEqual(payload["publication_id"], "plugin.video.twitch@3.1.11")
 
     def test_all_artifact_requests_use_exact_run_id(self):
-        result = _run_with_mocks(self.script, _config())
+        result = _run_with_mocks(self.scripts, _config())
         for call in result["listWorkflowRunArtifactsCalls"]:
             self.assertEqual(
                 call["run_id"], 12345,
                 f"artifact request used run_id={call['run_id']}, expected 12345",
             )
+
+
+@unittest.skipUnless(_HAS_YAML, "pyyaml not installed")
+class AddonValidationPublicationContractTests(unittest.TestCase):
+    """Verify validation publishes only the two retained contract artifacts."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.data = _load_validation_workflow()
+
+    def _upload_steps(self):
+        return [
+            step
+            for job in self.data.get("jobs", {}).values()
+            for step in job.get("steps", [])
+            if step.get("uses", "").startswith("actions/upload-artifact@")
+        ]
+
+    def _kodi_steps(self):
+        return self.data["jobs"]["kodi-check"]["steps"]
+
+    def test_exactly_two_publication_artifacts_are_uploaded(self):
+        uploads = self._upload_steps()
+        self.assertEqual(len(uploads), 2)
+        self.assertEqual(
+            {step.get("with", {}).get("name") for step in uploads},
+            {"addon-package", "validation-evidence"},
+        )
+
+    def test_publication_artifacts_have_30_day_retention(self):
+        for step in self._upload_steps():
+            self.assertEqual(step.get("with", {}).get("retention-days"), 30)
+
+    def test_checker_lock_is_sparse_checked_out_at_candidate_sha(self):
+        checkout = next(
+            step
+            for step in self._kodi_steps()
+            if step.get("uses", "").startswith("actions/checkout@")
+        )
+        inputs = checkout.get("with", {})
+        self.assertEqual(inputs.get("ref"), "${{ github.sha }}")
+        self.assertFalse(inputs.get("persist-credentials"))
+        self.assertEqual(
+            inputs.get("sparse-checkout"),
+            ".github/workflow-requirements/addon-check.txt",
+        )
+        self.assertFalse(inputs.get("sparse-checkout-cone-mode"))
+        self.assertNotIn("path", inputs)
+
+    def test_checker_lock_does_not_use_an_artifact_or_expose_a_token(self):
+        serialized = json.dumps(self._kodi_steps())
+        self.assertNotIn("addon-check-dependencies", serialized)
+        self.assertNotIn("github.token", serialized)
+        self.assertNotIn("secrets.", serialized)
+        install = next(
+            step for step in self._kodi_steps()
+            if step.get("name") == "Install dependencies"
+        )
+        self.assertIn(
+            "-r .github/workflow-requirements/addon-check.txt",
+            install.get("run", ""),
+        )
+
+    def test_checker_lock_checkout_precedes_package_download(self):
+        steps = self._kodi_steps()
+        checkout_index = next(
+            index for index, step in enumerate(steps)
+            if step.get("uses", "").startswith("actions/checkout@")
+        )
+        download_index = next(
+            index for index, step in enumerate(steps)
+            if step.get("with", {}).get("name") == "addon-package"
+        )
+        self.assertLess(checkout_index, download_index)
 
 
 # ---------------------------------------------------------------------------
@@ -333,14 +464,14 @@ class NotifyWorkflowScriptTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.data = _load_workflow()
-        cls.script = _extract_script(cls.data)
-        if not cls.script:
+        cls.scripts = _extract_scripts(cls.data)
+        if len(cls.scripts) != 2:
             raise AssertionError(
-                "notify-repository.yml must contain a github-script step"
+                "notify-repository.yml must contain two github-script steps"
             )
 
     def _run(self, **kwargs):
-        return _run_with_mocks(self.script, _config(**kwargs))
+        return _run_with_mocks(self.scripts, _config(**kwargs))
 
     def test_valid_run_outputs_payload(self):
         result = self._run()
@@ -354,20 +485,27 @@ class NotifyWorkflowScriptTests(unittest.TestCase):
         self.assertEqual(payload["validation_run_id"], 12345)
         self.assertEqual(payload["validation_head_sha"], "a" * 40)
         self.assertEqual(payload["validation_workflow"], "Add-on Validations")
+        self.assertEqual(
+            payload["validation_workflow_path"],
+            ".github/workflows/addon-validations.yml@develop",
+        )
         self.assertEqual(payload["expected_branch"], "develop")
+        self.assertEqual(payload["publication_id"], "plugin.video.twitch@3.1.11")
 
-    def test_payload_exactly_six_fields(self):
+    def test_payload_has_exact_ordered_fields(self):
         result = self._run()
         payload = json.loads(result["outputs"]["payload"])
-        expected = {
+        expected = [
             "source_repo",
             "candidate_sha",
             "validation_run_id",
             "validation_head_sha",
             "validation_workflow",
+            "validation_workflow_path",
             "expected_branch",
-        }
-        self.assertEqual(set(payload.keys()), expected)
+            "publication_id",
+        ]
+        self.assertEqual(list(payload), expected)
 
     def test_validation_run_id_is_json_number(self):
         result = self._run()
@@ -394,6 +532,32 @@ class NotifyWorkflowScriptTests(unittest.TestCase):
         result = self._run(run_overrides={"name": "Some Other Workflow"})
         self.assertTrue(result["failed"], "wrong workflow name should be rejected")
         self.assertEqual(len(result["dispatchCalls"]), 0)
+
+    def test_missing_workflow_path_rejected(self):
+        result = self._run(run_overrides={"path": None})
+        self.assertTrue(result["failed"], "missing workflow path should be rejected")
+        self.assertNotIn("payload", result["outputs"])
+
+    def test_wrong_workflow_path_rejected(self):
+        result = self._run(
+            run_overrides={"path": ".github/workflows/addon-validations.yml@develop"}
+        )
+        self.assertTrue(result["failed"], "wrong workflow path should be rejected")
+        self.assertNotIn("payload", result["outputs"])
+
+    def test_missing_publication_id_rejected(self):
+        evidence = _valid_evidence()
+        del evidence["publication_id"]
+        result = self._run(evidence=evidence)
+        self.assertTrue(result["failed"], "missing publication ID should be rejected")
+        self.assertNotIn("payload", result["outputs"])
+
+    def test_wrong_publication_id_rejected(self):
+        result = self._run(
+            evidence=_valid_evidence(publication_id="plugin.video.other@3.1.11")
+        )
+        self.assertTrue(result["failed"], "wrong publication ID should be rejected")
+        self.assertNotIn("payload", result["outputs"])
 
     def test_malformed_sha_not_hex_rejected(self):
         result = self._run(run_overrides={"head_sha": "not-a-valid-sha"})
@@ -523,7 +687,7 @@ class NotifyWorkflowScriptTests(unittest.TestCase):
         )
         self.assertEqual(len(result["dispatchCalls"]), 0)
 
-    def test_extra_unrelated_artifact_allowed(self):
+    def test_extra_unrelated_artifact_rejected(self):
         result = self._run(
             artifacts={
                 "total_count": 3,
@@ -534,8 +698,8 @@ class NotifyWorkflowScriptTests(unittest.TestCase):
                 ],
             }
         )
-        self.assertFalse(
-            result["failed"], "extra unrelated artifact should not cause failure"
+        self.assertTrue(
+            result["failed"], "extra unrelated artifact should cause failure"
         )
 
     def test_no_dispatch_on_rejection(self):
@@ -565,12 +729,12 @@ class NotifyWorkflowPaginationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.data = _load_workflow()
-        cls.script = _extract_script(cls.data)
-        if not cls.script:
-            raise AssertionError("No github-script step found")
+        cls.scripts = _extract_scripts(cls.data)
+        if len(cls.scripts) != 2:
+            raise AssertionError("Expected two github-script steps")
 
     def _run(self, **kwargs):
-        return _run_with_mocks(self.script, _config(**kwargs))
+        return _run_with_mocks(self.scripts, _config(**kwargs))
 
     def test_single_page_all_artifacts_fit(self):
         result = self._run(
@@ -591,14 +755,13 @@ class NotifyWorkflowPaginationTests(unittest.TestCase):
         result = self._run(
             pages={
                 "1": {
-                    "total_count": 3,
+                    "total_count": 2,
                     "artifacts": [
                         {"id": 1, "name": "addon-package", "expired": False},
-                        {"id": 3, "name": "logs", "expired": False},
                     ],
                 },
                 "2": {
-                    "total_count": 3,
+                    "total_count": 2,
                     "artifacts": [
                         {"id": 2, "name": "validation-evidence", "expired": False},
                     ],
@@ -615,14 +778,13 @@ class NotifyWorkflowPaginationTests(unittest.TestCase):
         result = self._run(
             pages={
                 "1": {
-                    "total_count": 3,
+                    "total_count": 2,
                     "artifacts": [
                         {"id": 1, "name": "addon-package", "expired": False},
-                        {"id": 3, "name": "logs", "expired": False},
                     ],
                 },
                 "2": {
-                    "total_count": 3,
+                    "total_count": 2,
                     "artifacts": [
                         {"id": 2, "name": "validation-evidence", "expired": False},
                     ],
@@ -691,11 +853,10 @@ class NotifyWorkflowPaginationTests(unittest.TestCase):
         result = self._run(
             pages={
                 "1": {
-                    "total_count": 3,
+                    "total_count": 2,
                     "artifacts": [
                         {"id": 1, "name": "addon-package", "expired": False},
                         {"id": 2, "name": "validation-evidence", "expired": False},
-                        {"id": 3, "name": "logs", "expired": False},
                     ],
                 },
             }

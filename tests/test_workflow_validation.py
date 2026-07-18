@@ -898,6 +898,88 @@ class WorkflowPolicyTests(unittest.TestCase):
             _, errors = validate_all_workflows(temp_dir)
         self.assertTrue(any('40-character commit SHA' in e for e in errors))
 
+    def test_rejects_env_signal_options_and_combined_bypasses(self):
+        """GNU env signal options, short clustering, -- boundary, and wrapper chains must not hide mutable installs."""
+        commands = (
+            'env --debug pip install pyyaml',
+            'env --list-signal-handling pip install pyyaml',
+            'env --default-signal=PIPE pip install pyyaml',
+            'env --block-signal=PIPE pip install pyyaml',
+            'env --ignore-signal=PIPE pip install pyyaml',
+            'env -iv pip install pyyaml',
+            'env -- pip install pyyaml',
+            'env -u FOO --debug -S "pip install pyyaml"',
+            'bash -c "env --debug pip install pyyaml"',
+            'true && env --debug pip install pyyaml',
+            'env --default-signal=PIPE python -m pip install pyyaml',
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.workflow['jobs']['test']['steps'].append({
+                    'run': command,
+                })
+                errors = validate_workflow_policy(
+                    self.workflow, 'addon-validations.yml'
+                )
+                self.assertTrue(
+                    any('hash-locked requirements' in e for e in errors),
+                    f'signal option bypass not rejected: {command}',
+                )
+                self.workflow['jobs']['test']['steps'].pop()
+
+    def test_accepts_immutable_and_terminal_with_new_options(self):
+        """Hash-locked installs under new env options, full-SHA VCS, and --help must be accepted."""
+        IMMUTABLE = 'pip install -r .github/workflow-requirements/test.txt --require-hashes'
+        VCS_IMMUTABLE = (
+            'pip install --no-build-isolation '
+            'git+https://github.com/xbmc/addon-check.git@'
+            '0123456789abcdef0123456789abcdef01234567 --no-deps'
+        )
+        commands = (
+            f'env --debug {IMMUTABLE}',
+            f'env --list-signal-handling {IMMUTABLE}',
+            f'env --default-signal=PIPE {IMMUTABLE}',
+            f'env --block-signal=PIPE {IMMUTABLE}',
+            f'env --ignore-signal=PIPE {IMMUTABLE}',
+            f'env --list-signal-handling {VCS_IMMUTABLE}',
+            'env --help pip install pyyaml',
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.workflow['jobs']['test']['steps'].append({
+                    'run': command,
+                })
+                errors = validate_workflow_policy(
+                    self.workflow, 'addon-validations.yml'
+                )
+                self.assertEqual(
+                    errors, [],
+                    f'legitimate option wrongly rejected: {command}',
+                )
+                self.workflow['jobs']['test']['steps'].pop()
+
+    def test_accepts_unsupported_verbose_and_separated_pseudo_operands(self):
+        """Unsupported --verbose long form and separated signal pseudo-operands must not cause false positives."""
+        commands = (
+            'env --verbose pip install pyyaml',
+            'env --default-signal PIPE pip install pyyaml',
+            'env --block-signal PIPE pip install pyyaml',
+            'env --ignore-signal PIPE pip install pyyaml',
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.workflow['jobs']['test']['steps'].append({
+                    'run': command,
+                })
+                errors = validate_workflow_policy(
+                    self.workflow, 'addon-validations.yml'
+                )
+                self.assertEqual(
+                    errors, [],
+                    f'unsupported option caused false positive: {command}',
+                )
+                self.workflow['jobs']['test']['steps'].pop()
+
 
 class GnuEnvSplitTests(unittest.TestCase):
     """Direct unit tests for the _gnu_env_split tokenizer."""

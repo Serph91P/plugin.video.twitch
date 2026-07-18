@@ -132,7 +132,7 @@ def _parse_env_short_options(token, tokens, index, n):
     advance = 1
     while pos < len(token):
         c = token[pos]
-        if c == 'i':
+        if c in ('i', 'v'):
             pos += 1
         elif c in ('u', 'C', 'a'):
             pos += 1
@@ -178,7 +178,12 @@ def _extract_pip_install_from_tokens(tokens, index=0):
             elif token == '--ignore-environment':
                 index += 1
             elif token in (
-                '--unset', '--chdir', '--argv0', '--split-string'
+                '--debug', '--list-signal-handling',
+                '--default-signal', '--block-signal', '--ignore-signal',
+            ):
+                index += 1
+            elif token in (
+                '--unset', '--chdir', '--argv0', '--split-string',
             ):
                 if token == '--split-string':
                     if index + 1 < n:
@@ -188,6 +193,9 @@ def _extract_pip_install_from_tokens(tokens, index=0):
                 token.startswith('--unset=')
                 or token.startswith('--chdir=')
                 or token.startswith('--argv0=')
+                or token.startswith('--default-signal=')
+                or token.startswith('--block-signal=')
+                or token.startswith('--ignore-signal=')
             ):
                 index += 1
             elif token.startswith('--split-string='):

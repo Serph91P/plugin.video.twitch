@@ -7,6 +7,9 @@ on:
   pull_request:
     branches: [main, develop]
 
+permissions:
+  contents: read
+
 jobs:
   test:
     name: Tests (Python ${{ matrix.python-version }})
@@ -18,17 +21,16 @@ jobs:
 
     steps:
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: ${{ matrix.python-version }}
 
       - name: Checkout Add-on
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install pyyaml coverage
+          python -m pip install --require-hashes -r .github/workflow-requirements/tests.txt
 
       - name: Run tests
         run: |
@@ -62,17 +64,16 @@ jobs:
 
     steps:
       - name: Checkout Add-on
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.13'
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install pyyaml
+          python -m pip install --require-hashes -r .github/workflow-requirements/pyyaml.txt
 
       - name: Build and validate package
         id: build
@@ -126,16 +127,23 @@ jobs:
           "
 
       - name: Upload package artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: addon-package
           path: dist/${{ steps.build.outputs.filename }}
 
       - name: Upload validation evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: validation-evidence
           path: dist/validation-evidence.json
+
+      - name: Upload checker dependency lock
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: addon-check-dependencies
+          path: .github/workflow-requirements/addon-check.txt
+          include-hidden-files: true
 
   kodi-check:
     name: Kodi Checker (${{ matrix.branch }})
@@ -149,24 +157,30 @@ jobs:
 
     steps:
       - name: Download package artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: addon-package
           path: dist
+
+      - name: Download checker dependency lock
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: addon-check-dependencies
+          path: .github/workflow-requirements
 
       - name: Extract runtime package
         run: |
           unzip dist/*.zip -d .
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.11'
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install git+https://github.com/xbmc/addon-check.git
+          python -m pip install --require-hashes -r .github/workflow-requirements/addon-check.txt
+          python -m pip install --no-deps --no-build-isolation git+https://github.com/xbmc/addon-check.git@67be5c1eca23e01402a447f995e2216bd83202f3
 
       - name: Kodi Add-on Checker (${{ matrix.branch }})
         run: |
@@ -178,17 +192,16 @@ jobs:
 
     steps:
       - name: Checkout Add-on
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.13'
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install pyyaml
+          python -m pip install --require-hashes -r .github/workflow-requirements/pyyaml.txt
 
       - name: Validate workflow YAML
         run: |
@@ -211,17 +224,16 @@ jobs:
 
     steps:
       - name: Checkout Add-on
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.13'
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install pyyaml
+          python -m pip install --require-hashes -r .github/workflow-requirements/pyyaml.txt
 
       - name: Conflict marker scan
         run: |

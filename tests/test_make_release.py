@@ -130,10 +130,10 @@ def _make_find_scenario(*, sha="abc123def456", ref="refs/tags/v1.0.0",
 
 
 def _make_find_run(*, run_id=1, name="Add-on Validations", conclusion="success",
-                   head_sha="abc123def456", head_branch="main"):
+                   head_sha="abc123def456", head_branch="main", event="push"):
     return {
         "id": run_id, "name": name, "conclusion": conclusion,
-        "head_sha": head_sha, "head_branch": head_branch,
+        "head_sha": head_sha, "head_branch": head_branch, "event": event,
     }
 
 
@@ -514,6 +514,16 @@ class MakeReleaseFindRunBehaviorTests(unittest.TestCase):
         result = _run_find_run_harness(scenario)
         self.assertFalse(result["failed"], result.get("failureMessage"))
         self.assertEqual(result["outputs"]["validation_run_id"], 99)
+
+    def test_pull_request_event_rejected_on_develop(self):
+        sha = "abc123"
+        scenario = _make_find_scenario(
+            ref="refs/tags/v1.0.0", sha=sha,
+            tag_runs=[_make_find_run(run_id=1, head_sha=sha, head_branch="develop", event="pull_request")],
+        )
+        result = _run_find_run_harness(scenario)
+        self.assertTrue(result["failed"], "pull_request event on develop must be rejected")
+        self.assertIn("No successful validation run", result["failureMessage"])
 
 
 @unittest.skipUnless(_HAS_YAML, 'pyyaml not installed')

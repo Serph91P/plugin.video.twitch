@@ -22,7 +22,7 @@ jobs:
         with:
           github-token: ${{ github.token }}
           script: |
-            const run = github.context.payload.workflow_run;
+            const run = context.payload.workflow_run;
 
             const shaPattern = /^[0-9a-f]{40}$/;
             if (!shaPattern.test(run.head_sha)) {
@@ -56,8 +56,8 @@ jobs:
             }
 
             const { data: firstPage } = await github.rest.actions.listWorkflowRunArtifacts({
-              owner: github.context.repo.owner,
-              repo: github.context.repo.repo,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
               run_id: run.id,
               per_page: 100,
             });
@@ -69,8 +69,8 @@ jobs:
               let page = 2;
               while (allArtifacts.length < totalCount && page <= 10) {
                 const { data: nextPage } = await github.rest.actions.listWorkflowRunArtifacts({
-                  owner: github.context.repo.owner,
-                  repo: github.context.repo.repo,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
                   run_id: run.id,
                   per_page: 100,
                   page,
@@ -108,7 +108,7 @@ jobs:
             }
 
             const payload = {
-              source_repo: github.context.repo.owner + '/' + github.context.repo.repo,
+              source_repo: context.repo.owner + '/' + context.repo.repo,
               candidate_sha: run.head_sha,
               validation_run_id: run.id,
               validation_head_sha: run.head_sha,

@@ -1,5 +1,7 @@
 name: Validate and Notify Repository
 
+# workflow_run evaluates this workflow from the default branch. Promote this
+# file unchanged after the develop rollout is approved.
 on:
   workflow_run:
     workflows: ["Add-on Validations"]
@@ -16,8 +18,8 @@ jobs:
       && github.event.workflow_run.event == 'push'
       && github.event.workflow_run.head_branch == 'develop'
     steps:
-      - name: Validate run and build payload
-        id: validate
+      - name: Validate run and select evidence
+        id: validate-run
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         with:
           github-token: ${{ github.token }}
@@ -37,6 +39,12 @@ jobs:
 
             if (run.name !== 'Add-on Validations') {
               core.setFailed('Unexpected workflow name: ' + run.name);
+              return;
+            }
+
+            const expectedWorkflowPath = '.github/workflows/addon-validations.yml';
+            if (run.path !== expectedWorkflowPath) {
+              core.setFailed('Unexpected workflow path: ' + run.path);
               return;
             }
 
@@ -85,6 +93,11 @@ jobs:
               return;
             }
 
+            if (totalCount !== 2 || allArtifacts.length !== 2) {
+              core.setFailed('Expected exactly 2 validation artifacts, found ' + allArtifacts.length);
+              return;
+            }
+
             const addonPackages = allArtifacts.filter(a => a.name === 'addon-package');
             const validAddonPackages = addonPackages.filter(a => !a.expired);
             if (addonPackages.length !== 1) {
@@ -107,13 +120,137 @@ jobs:
               return;
             }
 
+            const evidenceArtifactId = validValidationEvidences[0].id;
+            if (!Number.isInteger(evidenceArtifactId) || evidenceArtifactId <= 0) {
+              core.setFailed('Invalid validation-evidence artifact ID');
+              return;
+            }
+
+            core.setOutput('validation_evidence_artifact_id', evidenceArtifactId);
+
+      - name: Download exact validation evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+          artifact-ids: ${{ steps.validate-run.outputs.validation_evidence_artifact_id }}
+          merge-multiple: true
+          path: validation-artifacts
+
+      - name: Validate evidence and build payload
+        id: validate-evidence
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        env:
+          VALIDATION_EVIDENCE_PATH: ${{ github.workspace }}/validation-artifacts/validation-evidence.json
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const run = context.payload.workflow_run;
+            const evidencePath = process.env.VALIDATION_EVIDENCE_PATH;
+            const evidenceDirectory = path.dirname(evidencePath || '');
+
+            let entries;
+            try {
+              entries = fs.readdirSync(evidenceDirectory, { withFileTypes: true });
+            } catch (error) {
+              core.setFailed('Unable to read validation-evidence artifact wrapper');
+              return;
+            }
+
+            if (
+              entries.length !== 1
+              || entries[0].name !== 'validation-evidence.json'
+              || !entries[0].isFile()
+              || entries[0].isSymbolicLink()
+            ) {
+              core.setFailed('Unexpected validation-evidence artifact wrapper');
+              return;
+            }
+
+            let evidence;
+            try {
+              evidence = JSON.parse(fs.readFileSync(evidencePath, 'utf8'));
+            } catch (error) {
+              core.setFailed('Invalid validation-evidence JSON');
+              return;
+            }
+
+            if (evidence === null || Array.isArray(evidence) || typeof evidence !== 'object') {
+              core.setFailed('Validation evidence must be a JSON object');
+              return;
+            }
+
+            const expectedEvidenceFields = [
+              'candidate_sha',
+              'validation_run_id',
+              'validation_head_sha',
+              'addon_id',
+              'addon_version',
+              'asset_name',
+              'artifact_sha256',
+              'tag',
+              'publication_id',
+            ];
+            const evidenceFields = Object.keys(evidence);
+            if (
+              evidenceFields.length !== expectedEvidenceFields.length
+              || expectedEvidenceFields.some(field => !Object.prototype.hasOwnProperty.call(evidence, field))
+            ) {
+              core.setFailed('Unexpected validation-evidence JSON schema');
+              return;
+            }
+
+            if (evidence.candidate_sha !== run.head_sha) {
+              core.setFailed('Evidence candidate SHA does not match validation run');
+              return;
+            }
+            if (evidence.validation_head_sha !== run.head_sha) {
+              core.setFailed('Evidence validation head SHA does not match validation run');
+              return;
+            }
+            if (evidence.validation_run_id !== String(run.id)) {
+              core.setFailed('Evidence validation run ID does not match validation run');
+              return;
+            }
+            if (evidence.addon_id !== 'plugin.video.twitch') {
+              core.setFailed('Unexpected evidence add-on ID');
+              return;
+            }
+            if (typeof evidence.addon_version !== 'string' || !/^\d+\.\d+\.\d+$/.test(evidence.addon_version)) {
+              core.setFailed('Invalid evidence add-on version');
+              return;
+            }
+            if (evidence.asset_name !== evidence.addon_id + '-' + evidence.addon_version + '.zip') {
+              core.setFailed('Evidence asset name does not match add-on identity');
+              return;
+            }
+            if (typeof evidence.artifact_sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(evidence.artifact_sha256)) {
+              core.setFailed('Invalid evidence artifact checksum');
+              return;
+            }
+            if (evidence.tag !== '') {
+              core.setFailed('Validation evidence tag must be empty');
+              return;
+            }
+
+            const expectedPublicationId = evidence.addon_id + '@' + evidence.addon_version;
+            if (evidence.publication_id !== expectedPublicationId) {
+              core.setFailed('Evidence publication ID does not match add-on identity');
+              return;
+            }
+
             const payload = {
               source_repo: context.repo.owner + '/' + context.repo.repo,
               candidate_sha: run.head_sha,
               validation_run_id: run.id,
               validation_head_sha: run.head_sha,
               validation_workflow: run.name,
+              validation_workflow_path: '.github/workflows/addon-validations.yml@develop',
               expected_branch: run.head_branch,
+              publication_id: evidence.publication_id,
             };
 
             core.setOutput('payload', JSON.stringify(payload));
@@ -125,4 +262,4 @@ jobs:
           token: ${{ secrets.REPO_DISPATCH_TOKEN }}
           repository: Serph91P/repository.serph91p
           event-type: validated-addon-publication
-          client-payload: ${{ steps.validate.outputs.payload }}
+          client-payload: ${{ steps.validate-evidence.outputs.payload }}

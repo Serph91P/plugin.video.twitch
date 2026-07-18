@@ -927,6 +927,71 @@ class WorkflowPolicyTests(unittest.TestCase):
                 )
                 self.workflow['jobs']['test']['steps'].pop()
 
+    def test_rejects_env_long_option_abbreviation_bypass(self):
+        """GNU env unambiguous long-option abbreviations must not hide mutable installs.
+
+        GNU coreutils env accepts unambiguous long-option abbreviations.
+        The parser must recognize these and not treat them as executable commands.
+        """
+        commands = (
+            # Unambiguous abbreviations for options WITHOUT operands
+            'env --deb pip install pyyaml',          # --debug
+            'env --list-sig pip install pyyaml',     # --list-signal-handling
+            # Unambiguous abbreviations for options WITH operands (= form only;
+            # GNU env does not support separated operand form for signal options)
+            'env --def=PIPE pip install pyyaml',     # --default-signal=
+            'env --blo=PIPE pip install pyyaml',     # --block-signal=
+            'env --ignore-sig=PIPE pip install pyyaml', # --ignore-signal= (unambiguous)
+            # Abbreviations with assignments, -- boundary, nesting, chains, python -m pip
+            'env FOO=bar --deb pip install pyyaml',
+            'env --deb -- pip install pyyaml',
+            'bash -c "env --deb pip install pyyaml"',
+            'true && env --list-sig pip install pyyaml',
+            'env --def=PIPE python -m pip install pyyaml',
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.workflow['jobs']['test']['steps'].append({
+                    'run': command,
+                })
+                errors = validate_workflow_policy(
+                    self.workflow, 'addon-validations.yml'
+                )
+                self.assertTrue(
+                    any('hash-locked requirements' in e for e in errors),
+                    f'long-option abbreviation bypass not rejected: {command}',
+                )
+                self.workflow['jobs']['test']['steps'].pop()
+
+    def test_rejects_env_ambiguous_long_option_abbreviation_not_bypass(self):
+        """GNU env AMBIGUOUS long-option abbreviations must not be treated as env options.
+
+        Ambiguous abbreviations (e.g. --ign for --ignore-environment/--ignore-signal)
+        are rejected by GNU env and must not be treated as env options by the parser.
+        """
+        commands = (
+            # --ign is ambiguous between --ignore-environment and --ignore-signal
+            'env --ign pip install pyyaml',
+            'env --ign=PIPE pip install pyyaml',
+            # --def-sig would be ambiguous between --default-signal and --block-signal? No, --def is only for --default-signal
+            # --blo-sig would be ambiguous? No, --blo only matches --block-signal
+            # Use a truly ambiguous one: --ign-env could be confused? No, only --ignore-environment starts with ign-env
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.workflow['jobs']['test']['steps'].append({
+                    'run': command,
+                })
+                errors = validate_workflow_policy(
+                    self.workflow, 'addon-validations.yml'
+                )
+                # These should NOT be rejected as env bypass because GNU env itself rejects them
+                self.assertEqual(
+                    errors, [],
+                    f'ambiguous abbreviation caused false positive: {command}',
+                )
+                self.workflow['jobs']['test']['steps'].pop()
+
     def test_accepts_immutable_and_terminal_with_new_options(self):
         """Hash-locked installs under new env options, full-SHA VCS, and --help must be accepted."""
         IMMUTABLE = 'pip install -r .github/workflow-requirements/test.txt --require-hashes'

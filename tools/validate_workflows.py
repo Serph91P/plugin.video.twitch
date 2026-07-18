@@ -37,6 +37,64 @@ WORKFLOW_PERMISSIONS = {
 }
 
 
+_GNU_ENV_LONG_OPTIONS = frozenset((
+    'argv0',
+    'block-signal',
+    'chdir',
+    'debug',
+    'default-signal',
+    'help',
+    'ignore-environment',
+    'ignore-signal',
+    'list-signal-handling',
+    'null',
+    'split-string',
+    'unset',
+    'version',
+))
+
+_GNU_ENV_OPTIONS_WITH_OPERAND = frozenset((
+    'argv0',
+    'block-signal',
+    'chdir',
+    'default-signal',
+    'ignore-signal',
+    'split-string',
+    'unset',
+))
+
+_GNU_ENV_OPTIONS_WITH_SEPARATED_OPERAND = frozenset((
+    'argv0',
+    'chdir',
+    'split-string',
+    'unset',
+))
+
+_GNU_ENV_TERMINAL_OPTIONS = frozenset((
+    'help',
+    'version',
+))
+
+
+def _is_gnu_env_long_option_abbreviation(token):
+    """Check if token is an unambiguous abbreviation of a GNU env long option.
+
+    Returns the canonical option name (without --) if it is an unambiguous
+    abbreviation, None otherwise.
+    """
+    if not token.startswith('--'):
+        return None
+    option_name = token[2:]
+    if '=' in option_name:
+        option_name = option_name.split('=', 1)[0]
+    if option_name in _GNU_ENV_LONG_OPTIONS:
+        return option_name
+    matches = [opt for opt in _GNU_ENV_LONG_OPTIONS if opt.startswith(option_name)]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
 def parse_yaml_file(path):
     if yaml is None:
         raise ImportError('pyyaml is required: pip install pyyaml')
@@ -177,44 +235,53 @@ def _extract_pip_install_from_tokens(tokens, index=0):
                 index += 1
             elif token == '--ignore-environment':
                 index += 1
-            elif token in (
-                '--debug', '--list-signal-handling',
-                '--default-signal', '--block-signal', '--ignore-signal',
-            ):
-                index += 1
-            elif token in (
-                '--unset', '--chdir', '--argv0', '--split-string',
-            ):
-                if token == '--split-string':
-                    if index + 1 < n:
-                        split_strings.append(tokens[index + 1])
-                index += 2
-            elif (
-                token.startswith('--unset=')
-                or token.startswith('--chdir=')
-                or token.startswith('--argv0=')
-                or token.startswith('--default-signal=')
-                or token.startswith('--block-signal=')
-                or token.startswith('--ignore-signal=')
-            ):
-                index += 1
-            elif token.startswith('--split-string='):
-                split_strings.append(token.split('=', 1)[1])
-                index += 1
-            elif (
-                token.startswith('-')
-                and not token.startswith('--')
-                and len(token) > 1
-            ):
-                result = _parse_env_short_options(
-                    token, tokens, index, n
-                )
-                if result is None:
-                    break
-                index, new_split_strings = result
-                split_strings.extend(new_split_strings)
             else:
-                break
+                canonical = _is_gnu_env_long_option_abbreviation(token)
+                if canonical is not None:
+                    # Terminal options (--help, --version) do not execute a command;
+                    # stop parsing env options and let the outer logic handle them.
+                    if canonical in _GNU_ENV_TERMINAL_OPTIONS:
+                        break
+                    # --split-string (-S): collect the operand for later processing
+                    if canonical == 'split-string':
+                        if '=' in token:
+                            split_strings.append(token.split('=', 1)[1])
+                            index += 1
+                        else:
+                            if index + 1 < n:
+                                split_strings.append(tokens[index + 1])
+                            index += 2
+                    # Options with operands: consume operand based on supported forms
+                    elif canonical in _GNU_ENV_OPTIONS_WITH_OPERAND:
+                        if '=' not in token:
+                            # Separated operand form: --option value
+                            # Only some options support this form
+                            if canonical in _GNU_ENV_OPTIONS_WITH_SEPARATED_OPERAND:
+                                index += 2
+                            else:
+                                # This option doesn't support separated form;
+                                # stop parsing env options
+                                break
+                        else:
+                            # Equals form: --option=value
+                            index += 1
+                    else:
+                        # No-operand options: --debug, --list-signal-handling, --ignore-environment
+                        index += 1
+                elif (
+                    token.startswith('-')
+                    and not token.startswith('--')
+                    and len(token) > 1
+                ):
+                    result = _parse_env_short_options(
+                        token, tokens, index, n
+                    )
+                    if result is None:
+                        break
+                    index, new_split_strings = result
+                    split_strings.extend(new_split_strings)
+                else:
+                    break
         if index < n and tokens[index] == '--':
             index += 1
         if split_strings:

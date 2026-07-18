@@ -365,7 +365,7 @@ class NotifyWorkflowTokenBoundaryRuntimeTests(unittest.TestCase):
         self.assertEqual(payload["validation_workflow"], "Add-on Validations")
         self.assertEqual(
             payload["validation_workflow_path"],
-            ".github/workflows/addon-validations.yml@develop",
+            ".github/workflows/addon-validations.yml",
         )
         self.assertEqual(payload["expected_branch"], "develop")
         self.assertEqual(payload["publication_id"], "plugin.video.twitch@3.1.11")
@@ -487,7 +487,7 @@ class NotifyWorkflowScriptTests(unittest.TestCase):
         self.assertEqual(payload["validation_workflow"], "Add-on Validations")
         self.assertEqual(
             payload["validation_workflow_path"],
-            ".github/workflows/addon-validations.yml@develop",
+            ".github/workflows/addon-validations.yml",
         )
         self.assertEqual(payload["expected_branch"], "develop")
         self.assertEqual(payload["publication_id"], "plugin.video.twitch@3.1.11")

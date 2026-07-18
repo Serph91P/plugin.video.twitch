@@ -15,6 +15,8 @@ sys.path.insert(0, str(ROOT))
 
 try:
     from tools.validate_workflows import (
+        _gnu_env_split,
+        _SplitStringPolicyError,
         validate_all_workflows,
         validate_workflow_policy,
         validate_workflow_structure,
@@ -361,12 +363,45 @@ class WorkflowPolicyTests(unittest.TestCase):
     def test_rejects_env_option_operand_bypass(self):
         """env options with operands must not hide nested mutable installs."""
         commands = (
+            # separated short/long forms: -u/--unset/-C/--chdir
             'env -u FOO pip install pyyaml',
             'env --unset FOO pip install pyyaml',
             'env --unset=FOO pip install pyyaml',
             'env -C /tmp pip install pyyaml',
             'env --chdir /tmp pip install pyyaml',
             'env --chdir=/tmp pip install pyyaml',
+            # attached short operands: -uNAME/-CDIR
+            'env -uFOO pip install pyyaml',
+            'env -C/tmp pip install pyyaml',
+            # argv0: separated and attached forms
+            'env -a spoof pip install pyyaml',
+            'env --argv0 spoof pip install pyyaml',
+            'env --argv0=spoof pip install pyyaml',
+            'env -aspoof pip install pyyaml',
+            'env -a"s p o o f" pip install pyyaml',
+            # split-string: separated and equals forms
+            'env -S "pip install pyyaml"',
+            'env --split-string "pip install pyyaml"',
+            'env --split-string="pip install pyyaml"',
+            # split-string with python -m pip
+            'env -S "python -m pip install pyyaml"',
+            'env -S "python3 -m pip install pyyaml"',
+            # split-string with env assignment before command
+            'env -S "FOO=bar" pip install pyyaml',
+            'env FOO=bar -S "BAZ=qux" pip install pyyaml',
+            # mixed argv0 and split-string
+            'env -a spoof -S "pip install pyyaml"',
+            'env -S "FOO=bar" -a spoof pip install pyyaml',
+            # argv0 before other options
+            'env -a spoof -u FOO pip install pyyaml',
+            'env -a spoof -C /tmp pip install pyyaml',
+            'env -a spoof --unset=FOO pip install pyyaml',
+            # split-string with multiple segments
+            'env -S "pip install" "pyyaml"',
+            'env --split-string "pip" --split-string "install pyyaml"',
+            # argv0 with -- separator
+            'env -a spoof -- pip install pyyaml',
+            'env --argv0=spoof -- pip install pyyaml',
         )
         for command in commands:
             with self.subTest(command=command):
@@ -442,6 +477,46 @@ class WorkflowPolicyTests(unittest.TestCase):
                 )
                 self.workflow['jobs']['test']['steps'].pop()
 
+    def test_rejects_attached_env_split_string_bypass(self):
+        """GNU env attached short -SARG and combined -iSARG must not hide mutable installs."""
+        commands = (
+            'env -S"pip install pyyaml"',
+            'env -iS"pip install pyyaml"',
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.workflow['jobs']['test']['steps'].append({
+                    'run': command,
+                })
+                errors = validate_workflow_policy(
+                    self.workflow, 'addon-validations.yml'
+                )
+                self.assertTrue(
+                    any('hash-locked requirements' in e for e in errors),
+                    f'attached env -S bypass not rejected: {command}',
+                )
+                self.workflow['jobs']['test']['steps'].pop()
+
+    def test_accepts_attached_env_split_string_immutable(self):
+        """GNU env attached short -SARG with immutable install must be accepted."""
+        commands = (
+            'env -S"pip install -r .github/workflow-requirements/test.txt --require-hashes"',
+            'env -iS"pip install -r .github/workflow-requirements/test.txt --require-hashes"',
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.workflow['jobs']['test']['steps'].append({
+                    'run': command,
+                })
+                errors = validate_workflow_policy(
+                    self.workflow, 'addon-validations.yml'
+                )
+                self.assertEqual(
+                    errors, [],
+                    f'legitimate attached env -S immutable rejected: {command}',
+                )
+                self.workflow['jobs']['test']['steps'].pop()
+
     def test_accepts_legitimate_attached_env_short_operand_usage(self):
         """Legitimate env attached short operands around immutable installs must be accepted."""
         commands = (
@@ -459,6 +534,242 @@ class WorkflowPolicyTests(unittest.TestCase):
                 self.assertEqual(
                     errors, [],
                     f'legitimate attached env short operand rejected: {command}',
+                )
+                self.workflow['jobs']['test']['steps'].pop()
+
+    def test_rejects_env_split_string_quoting_bypasses(self):
+        """env -S with quoted executable or nested shell must not bypass mutable install detection."""
+        commands = (
+            "env -S \"'pip' install pyyaml\"",
+            "env -S '\"pip\" install pyyaml'",
+            "env -S \"bash -c 'pip install pyyaml'\"",
+            'env -S "bash -c \\"pip install pyyaml\\""',
+            "env -S \"sh -c 'python -m pip install pyyaml'\"",
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.workflow['jobs']['test']['steps'].append({
+                    'run': command,
+                })
+                errors = validate_workflow_policy(
+                    self.workflow, 'addon-validations.yml'
+                )
+                self.assertTrue(
+                    any('hash-locked requirements' in e for e in errors),
+                    f'env split-string quoting bypass not rejected: {command}',
+                )
+                self.workflow['jobs']['test']['steps'].pop()
+
+    def test_accepts_env_split_string_quoted_immutable(self):
+        """env -S with quoted executable wrapping immutable install must be accepted."""
+        commands = (
+            "env -S \"'pip' install -r .github/workflow-requirements/test.txt --require-hashes\"",
+            "env -S \"bash -c 'pip install -r .github/workflow-requirements/test.txt --require-hashes'\"",
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.workflow['jobs']['test']['steps'].append({
+                    'run': command,
+                })
+                errors = validate_workflow_policy(
+                    self.workflow, 'addon-validations.yml'
+                )
+                self.assertEqual(
+                    errors, [],
+                    f'legitimate env split-string immutable rejected: {command}',
+                )
+                self.workflow['jobs']['test']['steps'].pop()
+
+    def test_rejects_env_split_string_backslash_underscore_separator(self):
+        """env -S with \\_ separator must not hide nested mutable installs.
+
+        GNU env documents \\_ outside quotes as an argument separator.
+        shlex.split() treats \\_ as a literal character, missing the split.
+        """
+        commands = (
+            r'env -S "pip\_install\_pyyaml"',
+            r"env -S 'pip\_install\_pyyaml'",
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.workflow['jobs']['test']['steps'].append({
+                    'run': command,
+                })
+                errors = validate_workflow_policy(
+                    self.workflow, 'addon-validations.yml'
+                )
+                self.assertTrue(
+                    any('hash-locked requirements' in e for e in errors),
+                    f'env split-string \\_ separator bypass not rejected: {command}',
+                )
+                self.workflow['jobs']['test']['steps'].pop()
+
+    def test_accepts_env_split_string_backslash_underscore_immutable(self):
+        """env -S with \\_ separators and hash-locked install must be accepted."""
+        commands = (
+            r'env -S "pip\_install\_-r\_.github/workflow-requirements/test.txt\_--require-hashes"',
+            r"env -S 'pip\_install\_-r\_.github/workflow-requirements/test.txt\_--require-hashes'",
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.workflow['jobs']['test']['steps'].append({
+                    'run': command,
+                })
+                errors = validate_workflow_policy(
+                    self.workflow, 'addon-validations.yml'
+                )
+                self.assertEqual(
+                    errors, [],
+                    f'legitimate env split-string \\_ immutable rejected: {command}',
+                )
+                self.workflow['jobs']['test']['steps'].pop()
+
+    def test_accepts_env_split_string_whitespace_escape_not_separator(self):
+        """env -S with \\t, \\n, \\f, \\r, \\v must not falsely reject.
+
+        GNU coreutils 9.7 does NOT treat \\t, \\n, \\f, \\r, \\v outside
+        quotes as argument separators.  They produce literal control
+        characters inside a single argv field, so the resulting command
+        is not a pip install bypass and must not be rejected.
+        """
+        commands = (
+            r'env -S "pip\tinstall\tpyyaml"',
+            r'env -S "pip\ninstall\npyyaml"',
+            r'env -S "pip\finstall\fpyyaml"',
+            r'env -S "pip\rinstall\rpyyaml"',
+            r'env -S "pip\vinstall\vpyyaml"',
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.workflow['jobs']['test']['steps'].append({
+                    'run': command,
+                })
+                errors = validate_workflow_policy(
+                    self.workflow, 'addon-validations.yml'
+                )
+                self.assertEqual(
+                    errors, [],
+                    f'env split-string whitespace escape falsely rejected: {command}',
+                )
+                self.workflow['jobs']['test']['steps'].pop()
+
+    def test_accepts_env_split_string_backslash_c_ignored_text(self):
+        """env -S with unquoted \\c must ignore trailing text, avoiding false positives.
+
+        GNU env treats unquoted \\c as 'ignore the rest of the string'.
+        Text after \\c must not be parsed as pip commands.
+        """
+        commands = (
+            r"env -S 'printf\c\_pip\_install\_pyyaml'",
+            'env -S "printf\\c\\_pip\\_install\\_pyyaml"',
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.workflow['jobs']['test']['steps'].append({
+                    'run': command,
+                })
+                errors = validate_workflow_policy(
+                    self.workflow, 'addon-validations.yml'
+                )
+                self.assertEqual(
+                    errors, [],
+                    f'env split-string \\c ignored text caused false positive: {command}',
+                )
+                self.workflow['jobs']['test']['steps'].pop()
+
+    def test_accepts_env_split_string_hash_comment_at_start(self):
+        """env -S with # as first char of unquoted arg must ignore rest, avoiding false positives.
+
+        GNU env treats # as a comment when it is the first character of an
+        unquoted argument; \\# yields a literal hash.
+        """
+        commands = (
+            "env -S '#pip install pyyaml'",
+            'env -S "#pip install pyyaml"',
+            "env -S 'echo #notacomment'",
+            "env -S 'pip # install pyyaml'",
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.workflow['jobs']['test']['steps'].append({
+                    'run': command,
+                })
+                errors = validate_workflow_policy(
+                    self.workflow, 'addon-validations.yml'
+                )
+                self.assertEqual(
+                    errors, [],
+                    f'env split-string # comment caused false positive: {command}',
+                )
+                self.workflow['jobs']['test']['steps'].pop()
+
+    def test_accepts_env_split_string_malformed_quoting(self):
+        """env -S with malformed quoting must fail closed: no crash, no false positives."""
+        commands = (
+            "env -S \"'unterminated\" pip install pyyaml",
+            "env -S \"'pip install pyyaml\"",
+            "env -S \"pip install pyyaml'\"",
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.workflow['jobs']['test']['steps'].append({
+                    'run': command,
+                })
+                try:
+                    errors = validate_workflow_policy(
+                        self.workflow, 'addon-validations.yml'
+                    )
+                except Exception as exc:
+                    self.fail(
+                        f'env split-string malformed quoting crashed: {command}: {exc}'
+                    )
+                self.assertEqual(
+                    errors, [],
+                    f'malformed env -S caused false positive: {command}',
+                )
+                self.workflow['jobs']['test']['steps'].pop()
+
+    def test_rejects_env_split_string_variable_expansion(self):
+        """env -S with ${VARNAME} expansion must be rejected as a bypass."""
+        commands = (
+            "env -S '${PIP} install pyyaml'",
+            'env -S "${PIP} install pyyaml"',
+            "env -S '${PIP} install' 'pyyaml'",
+            'env -S "${PIP}=${PIP} install pyyaml"',
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.workflow['jobs']['test']['steps'].append({
+                    'run': command,
+                })
+                errors = validate_workflow_policy(
+                    self.workflow, 'addon-validations.yml'
+                )
+                self.assertTrue(
+                    any('variable expansion' in e for e in errors),
+                    f'env split-string variable expansion bypass not rejected: {command}',
+                )
+                self.workflow['jobs']['test']['steps'].pop()
+
+    def test_accepts_env_missing_operands(self):
+        """env -a/--argv0 and -S/--split-string without operands must not crash or false positive."""
+        commands = (
+            'env -a',
+            'env --argv0',
+            'env -S',
+            'env --split-string',
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.workflow['jobs']['test']['steps'].append({
+                    'run': command,
+                })
+                errors = validate_workflow_policy(
+                    self.workflow, 'addon-validations.yml'
+                )
+                self.assertEqual(
+                    errors, [],
+                    f'env missing operand caused error: {command}',
                 )
                 self.workflow['jobs']['test']['steps'].pop()
 
@@ -528,17 +839,33 @@ class WorkflowPolicyTests(unittest.TestCase):
 
     def test_accepts_legitimate_wrapper_usage_around_immutable(self):
         """Legitimate env/shell wrappers around immutable installs must be accepted."""
+        IMMUTABLE = 'pip install -r .github/workflow-requirements/test.txt --require-hashes'
+        VCS_IMMUTABLE = (
+            'pip install --no-build-isolation '
+            'git+https://github.com/xbmc/addon-check.git@0123456789abcdef0123456789abcdef01234567 --no-deps'
+        )
         commands = (
-            'env -u FOO pip install -r .github/workflow-requirements/test.txt --require-hashes',
-            'env --unset FOO pip install -r .github/workflow-requirements/test.txt --require-hashes',
-            'env -C /tmp pip install -r .github/workflow-requirements/test.txt --require-hashes',
-            'env --chdir /tmp pip install -r .github/workflow-requirements/test.txt --require-hashes',
-            'bash --rcfile /etc/bashrc -c "pip install -r .github/workflow-requirements/test.txt --require-hashes"',
-            'bash -O OPTNAME -c "pip install -r .github/workflow-requirements/test.txt --require-hashes"',
-            'bash -o posix -c "pip install -r .github/workflow-requirements/test.txt --require-hashes"',
-            'bash --rcfile /etc/bashrc -c "pip install --no-build-isolation git+https://github.com/xbmc/addon-check.git@0123456789abcdef0123456789abcdef01234567 --no-deps"',
-            'env -uFOO pip install -r .github/workflow-requirements/test.txt --require-hashes',
-            'env -C/tmp pip install -r .github/workflow-requirements/test.txt --require-hashes',
+            # env -u/--unset/-C/--chdir (separated forms)
+            f'env -u FOO {IMMUTABLE}',
+            f'env --unset FOO {IMMUTABLE}',
+            f'env -C /tmp {IMMUTABLE}',
+            f'env --chdir /tmp {IMMUTABLE}',
+            # env attached short operands
+            f'env -uFOO {IMMUTABLE}',
+            f'env -C/tmp {IMMUTABLE}',
+            # env -a/--argv0 (separated and attached forms)
+            f'env -a spoof {IMMUTABLE}',
+            f'env --argv0=spoof {IMMUTABLE}',
+            f'env -aspoof {IMMUTABLE}',
+            # env -S/--split-string (separated and equals forms)
+            f'env -S "{IMMUTABLE}"',
+            f'env --split-string="{IMMUTABLE}"',
+            f'env --split-string "{IMMUTABLE}"',
+            # shell wrappers
+            f'bash --rcfile /etc/bashrc -c "{IMMUTABLE}"',
+            f'bash -O OPTNAME -c "{IMMUTABLE}"',
+            f'bash -o posix -c "{IMMUTABLE}"',
+            f'bash --rcfile /etc/bashrc -c "{VCS_IMMUTABLE}"',
         )
         for command in commands:
             with self.subTest(command=command):
@@ -570,6 +897,143 @@ class WorkflowPolicyTests(unittest.TestCase):
             )
             _, errors = validate_all_workflows(temp_dir)
         self.assertTrue(any('40-character commit SHA' in e for e in errors))
+
+
+class GnuEnvSplitTests(unittest.TestCase):
+    """Direct unit tests for the _gnu_env_split tokenizer."""
+
+    def test_whitespace_escape_sequences_are_literal_characters(self):
+        """\\t, \\n, \\f, \\r, \\v outside quotes produce literal control
+        characters inside a single argv field, not separate arguments.
+
+        GNU coreutils 9.7 does NOT split unquoted \\t, \\n, \\f, \\r, \\v
+        into separate argv fields for env -S.  They produce literal control
+        characters inside a single argv field.
+        """
+        cases = (
+            (r'pip\tinstall\tpyyaml', ['pip\tinstall\tpyyaml']),
+            (r'pip\ninstall\npyyaml', ['pip\ninstall\npyyaml']),
+            (r'pip\finstall\fpyyaml', ['pip\finstall\fpyyaml']),
+            (r'pip\rinstall\rpyyaml', ['pip\rinstall\rpyyaml']),
+            (r'pip\vinstall\vpyyaml', ['pip\vinstall\vpyyaml']),
+        )
+        for s, expected in cases:
+            with self.subTest(s=s):
+                self.assertEqual(_gnu_env_split(s), expected)
+
+    def test_backslash_c_ignores_remainder(self):
+        """Unquoted \\c must discard the rest of the string."""
+        self.assertEqual(
+            _gnu_env_split(r'printf\c\_pip\_install\_pyyaml'),
+            ['printf'],
+        )
+        self.assertEqual(
+            _gnu_env_split(r'echo hello\c world'),
+            ['echo', 'hello'],
+        )
+
+    def test_hash_comment_at_start_of_argument(self):
+        """# as first character of an unquoted argument ignores the rest of the string."""
+        self.assertEqual(_gnu_env_split('#pip install pyyaml'), [])
+        self.assertEqual(_gnu_env_split('echo #notacomment'), ['echo'])
+        self.assertEqual(_gnu_env_split('pip # comment install pyyaml'), ['pip'])
+
+    def test_escaped_hash_is_literal(self):
+        """\\# yields a literal hash character, not a comment."""
+        self.assertEqual(
+            _gnu_env_split(r'\#pip install pyyaml'),
+            ['#pip', 'install', 'pyyaml'],
+        )
+
+    def test_backslash_underscore_outside_quotes_splits(self):
+        """\\_ outside quotes is an argument separator."""
+        self.assertEqual(
+            _gnu_env_split(r'pip\_install\_pyyaml'),
+            ['pip', 'install', 'pyyaml'],
+        )
+
+    def test_backslash_underscore_inside_double_quotes_is_space(self):
+        """\\_ inside double quotes produces a literal space."""
+        self.assertEqual(
+            _gnu_env_split('"hello\\_world"'),
+            ['hello world'],
+        )
+
+    def test_escaped_dollar_is_literal(self):
+        """\\$ yields a literal dollar sign."""
+        self.assertEqual(
+            _gnu_env_split(r'FOO\$BAR'),
+            ['FOO$BAR'],
+        )
+
+    def test_double_quote_escape(self):
+        """\\\" yields a literal double-quote inside double quotes."""
+        self.assertEqual(
+            _gnu_env_split(r'"hello\"world"'),
+            ['hello"world'],
+        )
+
+    def test_single_quote_escape(self):
+        """\\' yields a literal single-quote (even inside single quotes)."""
+        self.assertEqual(
+            _gnu_env_split(r"'it\'s'"),
+            ["it's"],
+        )
+
+    def test_backslash_backslash_escape(self):
+        """\\\\ yields a literal backslash."""
+        self.assertEqual(_gnu_env_split(r'path\\to'), ['path\\to'])
+        self.assertEqual(_gnu_env_split(r"'path\\to'"), ['path\\to'])
+
+    def test_backslash_newline_continuation(self):
+        """\\ followed by newline is a line continuation."""
+        self.assertEqual(
+            _gnu_env_split('pip\\\ninstall pyyaml'),
+            ['pipinstall', 'pyyaml'],
+        )
+
+    def test_single_quotes_disable_escapes(self):
+        """Inside single quotes, escapes are literal except \\' and \\\\."""
+        self.assertEqual(
+            _gnu_env_split("'pip\\tinstall\\tpyyaml'"),
+            ['pip\\tinstall\\tpyyaml'],
+        )
+
+    def test_double_quotes_preserve_escapes(self):
+        """Inside double quotes, escape sequences are processed."""
+        self.assertEqual(
+            _gnu_env_split('"pip\\tinstall"'),
+            ['pip\tinstall'],
+        )
+
+    def test_malformed_quote_raises_value_error(self):
+        """Unterminated quotes must raise ValueError."""
+        with self.assertRaises(ValueError):
+            _gnu_env_split("'unterminated")
+        with self.assertRaises(ValueError):
+            _gnu_env_split('"unterminated')
+
+    def test_empty_string(self):
+        self.assertEqual(_gnu_env_split(''), [])
+
+    def test_dollar_brace_variable_expansion_raises_value_error(self):
+        """${VARNAME} patterns must raise _SplitStringPolicyError (fail-closed rejection)."""
+        with self.assertRaises(_SplitStringPolicyError):
+            _gnu_env_split('${PIP} install pyyaml')
+        with self.assertRaises(_SplitStringPolicyError):
+            _gnu_env_split('FOO=${BAR} pip install pyyaml')
+
+    def test_escaped_dollar_brace_is_rejected(self):
+        """\\${VARNAME} should also be rejected as it still contains ${...}."""
+        with self.assertRaises(_SplitStringPolicyError):
+            _gnu_env_split(r'\${PIP} install pyyaml')
+
+    def test_real_world_shebang_style(self):
+        """Typical shebang usage with mixed escapes and env vars."""
+        self.assertEqual(
+            _gnu_env_split(r'python -m pip\tinstall\tpyyaml'),
+            ['python', '-m', 'pip\tinstall\tpyyaml'],
+        )
 
 
 @unittest.skipUnless(_HAS_YAML, 'pyyaml not installed')

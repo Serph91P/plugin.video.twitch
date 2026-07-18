@@ -118,6 +118,42 @@ def _pip_install_argument_sets(command):
     return argument_sets
 
 
+def _parse_env_short_options(token, tokens, index, n):
+    """Parse combined GNU env short options from a single token.
+
+    Returns ``(new_index, new_split_strings)`` where *new_index* is the
+    position after consuming the current token and any separated operands,
+    and *new_split_strings* is a list of ``-S`` operand values collected.
+
+    Returns ``None`` when the token contains an unrecognised option flag.
+    """
+    split_strings = []
+    pos = 1
+    advance = 1
+    while pos < len(token):
+        c = token[pos]
+        if c == 'i':
+            pos += 1
+        elif c in ('u', 'C', 'a'):
+            pos += 1
+            if pos < len(token):
+                pos = len(token)
+            else:
+                advance += 1
+        elif c == 'S':
+            pos += 1
+            if pos < len(token):
+                split_strings.append(token[pos:])
+                pos = len(token)
+            else:
+                if index + advance < n:
+                    split_strings.append(tokens[index + advance])
+                advance += 1
+        else:
+            return None
+    return (index + advance, split_strings)
+
+
 def _extract_pip_install_from_tokens(tokens, index=0):
     """Recursively extract pip install argument sets from token list.
     Handles command/env prefixes, shell wrappers (bash -c, sh -c), and command/exec.
@@ -134,25 +170,59 @@ def _extract_pip_install_from_tokens(tokens, index=0):
     # Skip 'env' command with its options, assignments, and -- separator
     if index < n and Path(tokens[index]).name == 'env':
         index += 1
+        split_strings = []
         while index < n:
             token = tokens[index]
             if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*=.*', token):
                 index += 1
-            elif token in ('-i', '--ignore-environment'):
+            elif token == '--ignore-environment':
                 index += 1
-            elif token in ('-u', '--unset', '-C', '--chdir'):
+            elif token in (
+                '--unset', '--chdir', '--argv0', '--split-string'
+            ):
+                if token == '--split-string':
+                    if index + 1 < n:
+                        split_strings.append(tokens[index + 1])
                 index += 2
-            elif token.startswith('-') and len(token) > 2 and token[1] in ('u', 'C'):
-                index += 1
             elif (
                 token.startswith('--unset=')
                 or token.startswith('--chdir=')
+                or token.startswith('--argv0=')
             ):
                 index += 1
+            elif token.startswith('--split-string='):
+                split_strings.append(token.split('=', 1)[1])
+                index += 1
+            elif (
+                token.startswith('-')
+                and not token.startswith('--')
+                and len(token) > 1
+            ):
+                result = _parse_env_short_options(
+                    token, tokens, index, n
+                )
+                if result is None:
+                    break
+                index, new_split_strings = result
+                split_strings.extend(new_split_strings)
             else:
                 break
         if index < n and tokens[index] == '--':
             index += 1
+        if split_strings:
+            extra = []
+            for s in split_strings:
+                try:
+                    extra.extend(_gnu_env_split(s))
+                except ValueError:
+                    return argument_sets
+            tokens = tokens[:index] + extra + tokens[index:]
+            n = len(tokens)
+            while (
+                index < n
+                and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*=.*', tokens[index])
+            ):
+                index += 1
 
     if index >= n:
         return argument_sets
@@ -251,6 +321,145 @@ def _find_shell_command_arg(tokens, index, n):
     return None
 
 
+_ESCAPED_CH = {
+    'f': '\f', 'n': '\n', 'r': '\r', 't': '\t', 'v': '\v',
+    '#': '#', '$': '$', '_': ' ', '"': '"', "'": "'", '\\': '\\',
+}
+
+
+class _SplitStringPolicyError(Exception):
+    """Raised when an env -S string contains a dynamic pattern that must
+    be rejected rather than evaluated (e.g. ``${VARNAME}`` expansion)."""
+    pass
+
+
+def _gnu_env_split(s):
+    """Tokenize a GNU env -S string per documented lexical semantics.
+
+    Implements the split-string syntax from GNU Coreutils env(1):
+
+    * Outside quotes: ``\\_`` is an argument separator.
+    * Outside quotes: ``\\t``, ``\\n``, ``\\f``, ``\\r``, ``\\v`` produce
+      literal control characters (tab, newline, etc.) inside the current
+      argument.  GNU coreutils does NOT treat them as separators.
+    * Inside double quotes: the same escapes produce literal characters
+      (space for ``\\_``, tab for ``\\t``, etc.).  ``\\c`` is *not*
+      recognized inside double quotes.
+    * ``\\c`` outside quotes ignores the remainder of the string.
+    * ``#`` as the first character of an unquoted argument ignores the
+      remainder of the string.  ``\\#`` yields a literal hash.
+    * Single quotes disable all escapes except ``\\'`` and ``\\\\``.
+    * ``${VARNAME}`` expansion patterns are rejected (fail-closed)
+      since they could bypass mutable-install policy.
+    """
+    if '${' in s:
+        raise _SplitStringPolicyError(
+            'variable expansion ${...} in env -S string'
+        )
+    result = []
+    token = []
+    i = 0
+    n = len(s)
+    in_dquote = False
+    in_squote = False
+    first_unquoted = True
+
+    def _flush_token():
+        nonlocal first_unquoted
+        if token:
+            result.append(''.join(token))
+            token.clear()
+        first_unquoted = False
+
+    while i < n:
+        ch = s[i]
+
+        if in_squote:
+            if ch == '\\' and i + 1 < n and s[i + 1] in ("'", '\\'):
+                token.append(s[i + 1])
+                i += 2
+                continue
+            if ch == "'":
+                in_squote = False
+                i += 1
+                continue
+            token.append(ch)
+            i += 1
+            continue
+
+        if in_dquote:
+            if ch == '"':
+                in_dquote = False
+                i += 1
+                continue
+            if ch == '\\' and i + 1 < n:
+                nxt = s[i + 1]
+                if nxt == '\n':
+                    i += 2
+                    continue
+                mapped = _ESCAPED_CH.get(nxt)
+                if mapped is not None:
+                    token.append(mapped)
+                else:
+                    token.append('\\')
+                    token.append(nxt)
+                i += 2
+                continue
+            token.append(ch)
+            i += 1
+            continue
+
+        if ch == "'":
+            in_squote = True
+            first_unquoted = False
+            i += 1
+            continue
+        if ch == '"':
+            in_dquote = True
+            first_unquoted = False
+            i += 1
+            continue
+        if ch in (' ', '\t', '\n', '\r', '\f', '\v'):
+            _flush_token()
+            first_unquoted = True
+            i += 1
+            continue
+        if ch == '#':
+            if first_unquoted:
+                break
+            token.append(ch)
+            i += 1
+            continue
+        if ch == '\\' and i + 1 < n:
+            nxt = s[i + 1]
+            if nxt == '\n':
+                i += 2
+                continue
+            if nxt == 'c':
+                i += 2
+                break
+            mapped = _ESCAPED_CH.get(nxt)
+            if mapped is not None:
+                if nxt == '_':
+                    _flush_token()
+                    first_unquoted = True
+                else:
+                    token.append(mapped)
+            else:
+                token.append('\\')
+                token.append(nxt)
+            i += 2
+            continue
+        token.append(ch)
+        first_unquoted = False
+        i += 1
+
+    if in_squote or in_dquote:
+        raise ValueError('unterminated quote in env -S string')
+    _flush_token()
+    return result
+
+
 def _requirement_references(arguments):
     references = []
     for index, argument in enumerate(arguments):
@@ -305,7 +514,14 @@ def validate_workflow_policy(data, filename=''):
 
     for script in _run_scripts(data):
         for line in script.replace('\\\n', ' ').splitlines():
-            for arguments in _pip_install_argument_sets(line.strip()):
+            try:
+                argument_sets = _pip_install_argument_sets(line.strip())
+            except _SplitStringPolicyError:
+                errors.append(
+                    f'{filename}: env -S variable expansion is not allowed'
+                )
+                continue
+            for arguments in argument_sets:
                 if (
                     any(
                         argument in ('-U', '--upgrade')

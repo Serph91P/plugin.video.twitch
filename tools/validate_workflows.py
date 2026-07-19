@@ -34,6 +34,7 @@ WORKFLOW_PERMISSIONS = {
         'id-token': 'write',
         'pages': 'write',
     },
+    'workflow-lint.yml': {'contents': 'read'},
 }
 
 

@@ -100,6 +100,68 @@ class WorkflowPolicyTests(unittest.TestCase):
         )
         self.assertEqual(errors, [])
 
+    def test_workflow_lint_accepts_exact_permissions(self):
+        errors = validate_workflow_policy(
+            self.workflow, 'workflow-lint.yml'
+        )
+        self.assertEqual(errors, [])
+
+    def test_workflow_lint_rejects_missing_permissions(self):
+        del self.workflow['permissions']
+        errors = validate_workflow_policy(
+            self.workflow, 'workflow-lint.yml'
+        )
+        self.assertEqual(
+            errors,
+            ['workflow-lint.yml: missing top-level permissions'],
+        )
+
+    def test_workflow_lint_rejects_broader_permissions(self):
+        self.workflow['permissions']['actions'] = 'read'
+        errors = validate_workflow_policy(
+            self.workflow, 'workflow-lint.yml'
+        )
+        self.assertEqual(
+            errors,
+            [
+                "workflow-lint.yml: top-level permissions must be exactly "
+                "{'contents': 'read'}"
+            ],
+        )
+
+    def test_workflow_lint_rejects_every_write_permission(self):
+        write_scopes = (
+            'actions',
+            'artifact-metadata',
+            'attestations',
+            'checks',
+            'code-quality',
+            'contents',
+            'deployments',
+            'discussions',
+            'id-token',
+            'issues',
+            'packages',
+            'pages',
+            'pull-requests',
+            'security-events',
+            'statuses',
+        )
+        expected = (
+            "workflow-lint.yml: top-level permissions must be exactly "
+            "{'contents': 'read'}"
+        )
+        for scope in write_scopes:
+            with self.subTest(scope=scope):
+                self.workflow['permissions'] = {
+                    'contents': 'read',
+                    scope: 'write',
+                }
+                errors = validate_workflow_policy(
+                    self.workflow, 'workflow-lint.yml'
+                )
+                self.assertEqual(errors, [expected])
+
     def test_rejects_mutable_action_ref(self):
         self.workflow['jobs']['test']['steps'][0]['uses'] = (
             'actions/checkout@v4'

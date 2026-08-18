@@ -432,7 +432,7 @@ class Twitch:
     @api_error_handler
     @cache.cache_method(cache_limit=cache.limit, persist=False)
     def get_vod(self, video_id):
-        results = self.usher.video(video_id, headers=self.get_private_credential_headers())
+        results = self.usher.video(video_id, headers=self.get_private_credential_headers(), allow_audio_only=False)
         return self.error_check(results, private=True)
 
     @api_error_handler
@@ -444,7 +444,7 @@ class Twitch:
     @cache.cache_method(cache_limit=cache.limit, persist=False)
     def get_live(self, name):
         low_latency = utils.get_low_latency()
-        results = self.usher.live(name, headers=self.get_private_credential_headers(), low_latency=low_latency)
+        results = self.usher.live(name, headers=self.get_private_credential_headers(), low_latency=low_latency, allow_audio_only=False)
         return self.error_check(results, private=True)
 
     @api_error_handler
@@ -455,7 +455,7 @@ class Twitch:
         # The supported_codecs parameter tells Twitch which codecs the client can handle
         # Default is 'av1,h265,h264' to enable all available quality options
         low_latency = utils.get_low_latency()
-        results = self.usher.live_request(name, supported_codecs='av1,h265,h264', headers=self.get_private_credential_headers(), low_latency=low_latency)
+        results = self.usher.live_request(name, supported_codecs='av1,h265,h264', headers=self.get_private_credential_headers(), low_latency=low_latency, allow_audio_only=False)
         return self.error_check(results, private=True)
 
     @api_error_handler
@@ -464,7 +464,7 @@ class Twitch:
         # Request streams with AV1, H.265/HEVC and H.264 support for Enhanced Broadcasting (2K/4K/1440p)
         # The supported_codecs parameter tells Twitch which codecs the client can handle
         # Default is 'av1,h265,h264' to enable all available quality options
-        results = self.usher.video_request(video_id, supported_codecs='av1,h265,h264', headers=self.get_private_credential_headers())
+        results = self.usher.video_request(video_id, supported_codecs='av1,h265,h264', headers=self.get_private_credential_headers(), allow_audio_only=False)
         return self.error_check(results, private=True)
 
     @staticmethod

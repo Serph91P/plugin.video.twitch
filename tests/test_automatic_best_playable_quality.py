@@ -159,6 +159,17 @@ class AutomaticBestPlayableQualityTests(unittest.TestCase):
         self.assertEqual('hls', selected['id'])
         self.assertEqual('', selected['url'])
 
+    def test_global_adaptive_uses_master_for_supported_hevc(self):
+        _Kodi.settings['video_quality'] = '3'
+
+        selected = self.select(
+            'enhanced_master.m3u8', inputstream=True, token=True,
+            decoder_supported=True
+        )
+
+        self.assertEqual('hls', selected['id'])
+        self.assertEqual('', selected['url'])
+
     def test_non_inputstream_automatic_best_selects_hevc_1440p(self):
         selected = self.select('enhanced_master.m3u8')
 

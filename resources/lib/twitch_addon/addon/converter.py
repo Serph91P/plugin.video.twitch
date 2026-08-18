@@ -571,7 +571,7 @@ class JsonListItemConverter(object):
                     return hevc_video
                 return self.select_best_h264_video(videos)
 
-            if adaptive and get_hevc_token() and not clip:
+            if adaptive and not use_ia and get_hevc_token() and not clip:
                 hevc_video = self.select_best_hevc_video(videos)
                 if hevc_video:
                     return hevc_video

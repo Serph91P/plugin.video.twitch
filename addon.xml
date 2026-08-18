@@ -3,7 +3,7 @@
     <requires>
         <import addon="xbmc.python" version="3.0.1"/>
         <import addon="script.module.requests" version="2.9.1"/>
-        <import addon="script.module.python.twitch" version="3.0.4"/>
+        <import addon="script.module.python.twitch" version="3.0.5"/>
     </requires>
     <extension point="xbmc.python.pluginsource" library="resources/lib/addon_runner.py">
         <provides>video</provides>
@@ -15,6 +15,7 @@
             <fanart>resources/media/fanart.jpg</fanart>
         </assets>
         <news>
+[fix] Exclude audio-only Twitch renditions from video playback
 [fix] Harden playback, search, cache, history, settings, OAuth, and notification behavior
 [upd] Add deterministic runtime-only packaging and immutable release validation
 [upd] Validate repository source publication notifications

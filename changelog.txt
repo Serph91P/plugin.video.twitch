@@ -1,4 +1,5 @@
 3.1.11
+[fix] Exclude audio-only Twitch renditions from video playback
 [fix] Harden playback, search, cache, history, settings, OAuth, and notification behavior
 [upd] Add deterministic runtime-only packaging and immutable release validation
 [upd] Validate repository source publication notifications

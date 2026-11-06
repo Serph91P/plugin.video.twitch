@@ -227,6 +227,80 @@ class AutomaticBestPlayableQualityTests(unittest.TestCase):
             'https://video.example/h264/720p60/index.m3u8', selected['url']
         )
 
+    def test_automatic_best_ignores_resolution_markers_in_signed_urls(self):
+        source = {
+            'id': 'chunked', 'name': 'Source', 'resolution': '1664x936',
+            'codecs': 'avc1.4D402A,mp4a.40.2', 'bandwidth': 9238982,
+            'fps': 60, 'url': 'https://video.example/source/index.m3u8',
+        }
+        for name, resolution, marker in (
+            ('360p', '640x360', '951p'),
+            ('480p', '852x480', '2358p'),
+            ('480p', '852x480', '3840x2160'),
+        ):
+            with self.subTest(marker=marker):
+                lower = dict(
+                    source, id=name, name=name, resolution=resolution,
+                    bandwidth=1427999,
+                    url='https://video.example/opaque-%s-value/index.m3u8' % marker,
+                )
+                with patch(__name__ + '.parse_master_playlist', return_value=[source, lower]):
+                    selected = self.select('unused', token=False)
+                self.assertEqual('chunked', selected['id'])
+
+    def test_hevc_selection_ignores_resolution_markers_in_urls(self):
+        videos = parse_master_playlist('enhanced_master.m3u8')
+        lower = dict(
+            videos[-1], id='720p60_hevc', name='720p60 (HEVC)',
+            resolution='1280x720',
+            url='https://video.example/opaque-9999p-value/index.m3u8',
+        )
+        selected = self.converter.select_best_hevc_video(videos + [lower])
+        self.assertEqual('1440p60_hevc', selected['id'])
+
+    def test_resolution_metadata_takes_precedence_over_labels(self):
+        video = {
+            'id': '2160p60', 'name': '2160p', 'resolution': '1280x720',
+            'url': 'https://video.example/index.m3u8',
+        }
+        self.assertEqual(720, self.converter.video_sort_key(video)[0])
+
+    def test_missing_or_malformed_resolution_falls_back_to_labels(self):
+        for resolution in (None, '', 'invalid'):
+            for labels in ({'id': '720p60'}, {'name': '1280x720'}):
+                with self.subTest(resolution=resolution, labels=labels):
+                    video = dict(labels, resolution=resolution,
+                                 url='https://video.example/9999p/index.m3u8')
+                    self.assertEqual(720, self.converter.video_sort_key(video)[0])
+
+    def test_url_alone_is_not_resolution_metadata(self):
+        self.assertEqual(0, self.converter.video_sort_key({
+            'url': 'https://video.example/3840x2160/9999p/index.m3u8',
+        })[0])
+
+    def test_codec_markers_in_opaque_urls_do_not_exclude_h264_source(self):
+        for marker in ('h265', 'hevc', 'hvc1', 'hev1'):
+            with self.subTest(marker=marker):
+                videos = parse_master_playlist('h264_only_master.m3u8')
+                source = next(v for v in videos if v['id'] == 'chunked')
+                source['url'] = 'https://video.example/opaque-%s-value/index.m3u8' % marker
+                self.assertFalse(self.converter.is_hevc_video(source))
+                with patch(__name__ + '.parse_master_playlist', return_value=videos):
+                    selected = self.select('unused', token=False)
+                self.assertEqual('chunked', selected['id'])
+
+    def test_codec_metadata_takes_precedence_over_labels(self):
+        self.assertFalse(self.converter.is_hevc_video({
+            'id': '1080p60_hevc', 'name': '1080p HEVC',
+            'codecs': 'avc1.64002A,mp4a.40.2',
+        }))
+
+    def test_missing_codec_metadata_falls_back_to_labels_not_urls(self):
+        self.assertTrue(self.converter.is_hevc_video({'id': '1440p60_hevc'}))
+        self.assertFalse(self.converter.is_hevc_video({
+            'id': '1080p60', 'url': 'https://video.example/hevc/index.m3u8',
+        }))
+
 
 if __name__ == '__main__':
     unittest.main()

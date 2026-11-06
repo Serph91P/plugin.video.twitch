@@ -625,7 +625,9 @@ class JsonListItemConverter(object):
     def is_hevc_video(video):
         if video.get('id') == 'hls':
             return False
-        values = ' '.join([str(video.get(key, '')) for key in ('id', 'name', 'url', 'codecs', 'codec')]).lower()
+        values = str(video.get('codecs') or video.get('codec') or '').lower()
+        if not values:
+            values = ' '.join([str(video.get(key, '')) for key in ('id', 'name')]).lower()
         return any(codec in values for codec in ('h265', 'hevc', 'hvc1', 'hev1'))
 
     @classmethod
@@ -647,10 +649,18 @@ class JsonListItemConverter(object):
 
     @staticmethod
     def video_sort_key(video):
-        values = ' '.join([str(video.get(key, '')) for key in ('id', 'name', 'url', 'resolution')]).lower()
-        heights = [int(height) for _, height in re.findall(r'([0-9]{3,4})x([0-9]{3,4})', values)]
-        heights.extend([int(height) for height in re.findall(r'(?:^|[^0-9])([0-9]{3,4})p(?:[^0-9]|$)', values)])
-        height = max(heights) if heights else 0
+        # Signed CDN URLs are opaque and can contain random resolution/codec markers.
+        resolution = re.fullmatch(
+            r'([1-9][0-9]*)x([1-9][0-9]*)',
+            str(video.get('resolution') or '').strip().lower()
+        )
+        if resolution:
+            height = int(resolution.group(2))
+        else:
+            values = ' '.join([str(video.get(key, '')) for key in ('id', 'name')]).lower()
+            heights = [int(height) for _, height in re.findall(r'([0-9]{3,4})x([0-9]{3,4})', values)]
+            heights.extend([int(height) for height in re.findall(r'(?:^|[^0-9])([0-9]{3,4})p', values)])
+            height = max(heights) if heights else 0
         try:
             bandwidth = int(video.get('bandwidth') or 0)
         except (TypeError, ValueError):
